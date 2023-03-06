@@ -1,0 +1,16 @@
+Mechanism Description:
+
+To ensure causal consistency, we needed to make sure we handle our clocks correctly for reads and writes.
+For reads, we needed to check for consistency. If the local vector clock of a node reads lower (or earlier),
+then the node's vector clock reading a value will broadcast to all nodes with the correct vector clocks for
+the events that transpired that the local node missed. Once received, it will possess the correct events and
+information, and will be able to fulfill the read request. For writes, we do not need to check for consistency,
+since the write makes the node consistent. Writes could mean adding to our KVS, deleting from our KVS, or updating
+one of the values from our KVS. For each write, however, we must increment our clocks before the execution to
+account for the fact that an operation was done. We acknowledge the client that the write was fulfilled and
+broadcast the operation and our updated clock to all correct nodes.
+
+A replica can detect if other replicas are down when a view change is adminstered. A replica has 10 seconds
+to respond to the view change PUT request. If it does not respond within 10 seconds, then that replica is considered down.
+Every 10 seconds, when the replicas converge, a request will be sent to the replicas that are down to see if they are up and
+get them to be consistent.
