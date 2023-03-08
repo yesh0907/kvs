@@ -39,13 +39,13 @@ class KvsController {
       const metadata = Array.from(localClock.getClock());
       const prev = await this.kvsService.createOrUpdateKv(kvData);
       if (prev === undefined) {
-        res.status(201).json({ "causal-metadata": metadata });
+        res.status(201).json({ "causal-metadata": metadata, "shard-id": 1 });
       } else {
-        res.status(200).json({ "causal-metadata": metadata });
+        res.status(200).json({ "causal-metadata": metadata, "shard-id": 1 });
       }
       // broadcast write
       if (IORunning()) {
-        const broadcastData = { key: kvData.key, val: kvData.val, "causal-metadata": metadata, sender: ADDRESS };
+        const broadcastData = { key: kvData.key, val: kvData.val, "causal-metadata": metadata, sender: ADDRESS, "shard-id": 1 };
         broadcast("kvs:write", broadcastData);
       }
     } catch (error) {
@@ -65,12 +65,12 @@ class KvsController {
       if (localClock.validateClock(receivedClock)) {
         const metadata = Array.from(localClock.getClock());
         const keys = await this.kvsService.getAllKeys();
-        res.status(200).json({ "causal-metadata": metadata, ...keys });
+        res.status(200).json({ "causal-metadata": metadata, ...keys, "shard-id": 1 });
       } else {
         const { success, value }: { success: boolean; value: any } = await clockService.getCausalConsistency(undefined, receivedClock);
         if (success) {
           const metadata = Array.from(localClock.getClock());
-          res.status(200).json({ "causal-metadata": metadata, ...value });
+          res.status(200).json({ "causal-metadata": metadata, ...value, "shard-id": 1 });
         } else {
           throw new HttpException(500, "timed out while waiting for depended updates");
         }
@@ -111,9 +111,9 @@ class KvsController {
         }
         const metadata = Array.from(localClock.getClock());
         if (val === undefined) {
-          res.status(404).json({ "causal-metadata": metadata });
+          res.status(404).json({ "causal-metadata": metadata, "shard-id": 1 });
         } else {
-          res.status(200).json({ val, "causal-metadata": metadata });
+          res.status(200).json({ val, "causal-metadata": metadata, "shard-id": 1 });
         }
       } else {
         if (IORunning()) {
@@ -124,9 +124,9 @@ class KvsController {
           if (success) {
             const metadata = Array.from(localClock.getClock());
             if (exists) {
-              res.status(200).json({ val: value, "causal-metadata": metadata });
+              res.status(200).json({ val: value, "causal-metadata": metadata, "shard-id": 1 });
             } else {
-              res.status(404).json({ "causal-metadata": metadata });
+              res.status(404).json({ "causal-metadata": metadata, "shard-id": 1 });
             }
           } else {
             throw new HttpException(500, "timed out while waiting for depended updates");
@@ -155,14 +155,14 @@ class KvsController {
         const prev = await this.kvsService.deleteKv(key);
         let metadata = Array.from(localClock.getClock());
         if (prev === undefined) {
-          res.status(404).json({ "causal-metadata": metadata });
+          res.status(404).json({ "causal-metadata": metadata, "shard-id": 1 });
         } else {
           localClock.incrementClock(ADDRESS);
           metadata = Array.from(localClock.getClock());
-          res.status(200).json({ "causal-metadata": metadata });
+          res.status(200).json({ "causal-metadata": metadata, "shard-id": 1 });
           // broadcast delete
           if (IORunning()) {
-            const broadcastData = { key, "causal-metadata": metadata, sender: ADDRESS };
+            const broadcastData = { key, "causal-metadata": metadata, sender: ADDRESS, "shard-id": 1 };
             broadcast("kvs:delete", broadcastData);
           }
         }
