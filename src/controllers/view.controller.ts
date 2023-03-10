@@ -16,12 +16,11 @@ class ViewController {
 
   public setView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { view } = req.body;
       let sender = req.body.sender;
       if (isEmpty(sender)) {
         sender = "client"
       }
-      await this.viewService.setView(view, sender);
+      await this.viewService.setView(req.body, sender);
       res.status(200).json();
     } catch (error) {
       next(error);
