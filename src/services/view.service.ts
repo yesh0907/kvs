@@ -13,6 +13,7 @@ import ReplicationService from "@/services/replication.service";
 class ViewService {
   public viewObject = viewModel;
   public mutex = new Mutex();
+  public num_shards = 1;
 
   constructor() {
     this.viewObject.view = [];
@@ -26,12 +27,20 @@ class ViewService {
     return ret;
   }
 
-  public async setView(incoming: string[], sender = "client"): Promise<void> {
+  public async setView(incomingBody: {num_shards: number, nodes: string[]}, sender = "client"): Promise<void> {
     let oldList = [];
+    this.num_shards = incomingBody.num_shards;
     await this.mutex.runExclusive(async () => {
-      // Fetch OldList
-      oldList = this.viewObject.view;
+      oldList = [] // Fetch entire list of old addresses
+
+      this.viewObject.view.forEach(element => {
+        element.nodes.forEach(addr => {
+          oldList.push(addr);
+        });
+      });
     });
+
+    let incoming = incomingBody.nodes;
 
     await this.updateView(incoming); // Update View
     const vc = clockService.getVectorClock();
@@ -113,9 +122,14 @@ class ViewService {
   public async updateView(incoming: string[]): Promise<void> {
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = [];
-      incoming.forEach(element => {
-        this.viewObject.view.push(element);
-      });
+      for(let i = 1; i <= this.num_shards; i++) {
+        this.viewObject.view.push({shard_id: i, nodes: []});
+      }
+
+      for(let i = 0; i < incoming.length; i++) {
+        let k = i % this.num_shards;
+        this.viewObject.view[k].nodes.push(incoming[i]);
+      }
     });
   }
 
