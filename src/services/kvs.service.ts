@@ -67,6 +67,24 @@ class KvsService {
   public getCurrentKvs() {
     return this.kvs;
   }
+
+  public lookUp(num_shards: number, str: string) {
+    return (this.hashFunction(str) % num_shards);
+  }
+
+  public hashFunction(str: string) {
+    const p = 31;
+    const m = 1e9 + 9;
+    let hash_value = 0;
+    let p_pow = 1;
+    for (let i = 0; i < str.length; i++) {
+      let c = str.charCodeAt(i);
+      hash_value = (hash_value + (c - 98) * p_pow) % m;
+      p_pow = (p_pow * p) % m;
+    }
+        
+    return hash_value;
+  }
 }
 
 const kvsService = new KvsService();
