@@ -9,6 +9,7 @@ import axios from "axios";
 import clockService from "@/services/clock.service";
 import kvsService from "@/services/kvs.service";
 import ReplicationService from "@/services/replication.service";
+import { Shard } from "@/interfaces/shard.interface";
 
 class ViewService {
   public viewObject = viewModel;
@@ -19,8 +20,8 @@ class ViewService {
     this.viewObject.view = [];
   }
 
-  public async getView(): Promise<{ view: string[] }> {
-    let ret: { view: string[] };
+  public async getView(): Promise<{ view: Shard[] }> {
+    let ret: { view: Shard[] };
     await this.mutex.runExclusive(async () => {
       ret = this.viewObject;
     });
@@ -40,7 +41,7 @@ class ViewService {
       });
     });
 
-    let incoming = incomingBody.nodes;
+    const incoming = incomingBody.nodes;
 
     await this.updateView(incoming); // Update View
     const vc = clockService.getVectorClock();
@@ -123,11 +124,11 @@ class ViewService {
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = [];
       for(let i = 1; i <= this.num_shards; i++) {
-        this.viewObject.view.push({shard_id: i, nodes: []});
+        this.viewObject.view.push({shardId: i, nodes: []});
       }
 
       for(let i = 0; i < incoming.length; i++) {
-        let k = i % this.num_shards;
+        const k = i % this.num_shards;
         this.viewObject.view[k].nodes.push(incoming[i]);
       }
     });
@@ -182,11 +183,15 @@ class ViewService {
     // 2. this replica becomes IO server
     ioServer.listen();
     // 3. forward view change to all other replicas via HTTP
-    await this.sendViewChange(
-      viewReplicas.filter(replica => replica !== ADDRESS),
-      viewReplicas,
-    );
+    // await this.sendViewChange(
+    //   viewReplicas.filter(replica => replica !== ADDRESS),
+    //   viewReplicas,
+    // );
   }
+
+  // public assignShards() {
+
+  // }
 }
 
 const myService = new ViewService();
