@@ -1,4 +1,4 @@
 export interface Shard {
-  shardId: number;
+  shard_id: number;
   nodes: string[];
 }

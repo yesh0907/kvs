@@ -124,7 +124,7 @@ class ViewService {
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = [];
       for(let i = 1; i <= this.num_shards; i++) {
-        this.viewObject.view.push({shardId: i, nodes: []});
+        this.viewObject.view.push({shard_id: i, nodes: []});
       }
 
       for(let i = 0; i < incoming.length; i++) {
