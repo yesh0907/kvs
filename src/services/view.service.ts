@@ -8,34 +8,48 @@ import { Mutex } from "async-mutex";
 import axios from "axios";
 import clockService from "@/services/clock.service";
 import kvsService from "@/services/kvs.service";
-import ReplicationService from "@/services/replication.service";
+// FIX LATER
+// import ReplicationService from "@/services/replication.service";
+import { Shard } from "@/interfaces/shard.interface";
 
 class ViewService {
   public viewObject = viewModel;
   public mutex = new Mutex();
+  public num_shards = 1;
 
   constructor() {
     this.viewObject.view = [];
+    this.viewObject.shard_index = -1;
   }
 
-  public async getView(): Promise<{ view: string[] }> {
-    let ret: { view: string[] };
+  public async getView(): Promise<{ view: Shard[] }> {
+    let ret: { view: Shard[] };
     await this.mutex.runExclusive(async () => {
       ret = this.viewObject;
     });
     return ret;
   }
 
-  public async setView(incoming: string[], sender = "client"): Promise<void> {
+  public async setView(incomingBody: { num_shards: number; nodes: string[] }, sender = "client"): Promise<void> {
     let oldList = [];
+    const prev_num_shards = this.num_shards;
+    this.num_shards = incomingBody.num_shards;
     await this.mutex.runExclusive(async () => {
-      // Fetch OldList
-      oldList = this.viewObject.view;
+      oldList = []; // Fetch entire list of old addresses
+
+      this.viewObject.view.forEach(shard => {
+        shard.nodes.forEach(addr => {
+          oldList.push(addr);
+        });
+      });
     });
 
+    const incoming = incomingBody.nodes;
     await this.updateView(incoming); // Update View
+
+    const view = (await this.getView()).view;
     const vc = clockService.getVectorClock();
-    incoming.forEach(replica => vc.addClock(replica));
+    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
 
     if (oldList.length === 0) {
       // Uninitialized
@@ -44,26 +58,25 @@ class ViewService {
         // forward view change to all other replicas via HTTP
         await this.sendViewChange(
           incoming.filter(replica => replica !== ADDRESS),
-          incoming,
+          view,
         );
         // get IO Server to start listening for connections
         ioServer.listen();
-      } else {
-        // connect to sender's IO Server
-        ioClient.connect(`http://${sender}`);
       }
-      const replication = new ReplicationService();
-      replication.begin();
+      // FIX LATER
+      // const replication = new ReplicationService();
+      // replication.begin();
     } else {
       // Already Initialized
       if (sender === "client") {
+        // check for shard changes too
         const containsAll = (arr1, arr2) => arr2.every(arr2Item => arr1.includes(arr2Item));
         const sameMembers = (arr1, arr2) => containsAll(arr1, arr2) && containsAll(arr2, arr1);
         const missing = oldList.filter(n => !incoming.includes(n));
         const extra = incoming.filter(n => !oldList.includes(n));
 
         // view has changed
-        if (!sameMembers(oldList, incoming)) {
+        if (!sameMembers(oldList, incoming) || prev_num_shards !== this.num_shards) {
           let ioServerKilled = false;
           const ioServerIP = ioClient.getIP();
           // figure out if replica running IO server has been killed or not
@@ -88,17 +101,55 @@ class ViewService {
             // 3. forward view change to all other replicas via HTTP
             await this.sendViewChange(
               incoming.filter(replica => replica !== ADDRESS),
-              incoming,
+              view,
             );
           } else {
             if (extra.length > 0) {
               // new replicas added to view
-              await this.sendViewChange(extra, incoming, ioServerIP);
+              await this.sendViewChange(extra, view, ioServerIP);
             }
             // update existing replica views
-            broadcast("viewchange:update", incoming);
+            broadcast("viewchange:update", { sender: ADDRESS, view: Array.from(view) });
           }
         }
+      }
+    }
+  }
+
+  public async updateView(incoming: string[]): Promise<void> {
+    await this.mutex.runExclusive(async () => {
+      this.viewObject.view = [];
+      for (let i = 0; i < this.num_shards; i++) {
+        this.viewObject.view.push({ shard_id: i, nodes: [] });
+      }
+
+      for (let i = 0; i < incoming.length; i++) {
+        const k = i % this.num_shards;
+        this.viewObject.shard_index = k;
+        this.viewObject.view[k].nodes.push(incoming[i]);
+      }
+    });
+  }
+
+  public async replaceView(view: Shard[], sender: string): Promise<void> {
+    logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
+    const prev = (await this.getView()).view;
+    await this.mutex.runExclusive(async () => {
+      this.viewObject.view = view;
+      for (let i = 0; i < view.length; i++) {
+        if (view[i].nodes.includes(ADDRESS)) {
+          this.viewObject.shard_index = i;
+          break;
+        }
+      }
+    });
+    const vc = clockService.getVectorClock();
+    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
+
+    if (sender !== "broadcast") {
+      if (prev.length === 0) {
+        // connect to sender's IO Server
+        ioClient.connect(`http://${sender}`);
       } else {
         // Disconnect from previous IO Server
         if (ioClient.isConnected()) {
@@ -110,24 +161,16 @@ class ViewService {
     }
   }
 
-  public async updateView(incoming: string[]): Promise<void> {
-    await this.mutex.runExclusive(async () => {
-      this.viewObject.view = [];
-      incoming.forEach(element => {
-        this.viewObject.view.push(element);
-      });
-    });
-  }
-
   public async deleteView(): Promise<void> {
     await this.mutex.runExclusive(async () => {
       await kvsService.clearKvs();
       this.viewObject.view = [];
+      this.viewObject.shard_index = -1;
     });
   }
 
-  public async sendViewChange(replicas: string[], view: string[], sender = ADDRESS): Promise<void> {
-    const addresses = replicas.map(replicaAddress => `http://${replicaAddress}/kvs/admin/view`);
+  public async sendViewChange(replicas: string[], view: Shard[], sender = ADDRESS): Promise<void> {
+    const addresses = replicas.map(replicaAddress => `http://${replicaAddress}/kvs/admin/view/shards`);
     try {
       const reqBody = {
         view,
@@ -158,8 +201,8 @@ class ViewService {
   }
 
   public async changeIOServer(): Promise<void> {
-    const view = await this.getView();
-    const viewReplicas = view.view;
+    const view = (await this.getView()).view;
+    const viewReplicas = view.map(shard => shard.nodes).flat();
     // IO Server is down but still in view, so connect to this replica's IO server
     // 1. disconnect from current IO Server
     if (ioClient.isConnected()) {
@@ -170,8 +213,16 @@ class ViewService {
     // 3. forward view change to all other replicas via HTTP
     await this.sendViewChange(
       viewReplicas.filter(replica => replica !== ADDRESS),
-      viewReplicas,
+      view,
     );
+  }
+
+  public async getShardReplicas(shard_id: number): Promise<string[]> {
+    let ret = [];
+    await this.mutex.runExclusive(async () => {
+      ret = this.viewObject.view[shard_id].nodes;
+    });
+    return ret;
   }
 }
 

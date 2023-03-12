@@ -8,7 +8,7 @@ class ViewController {
   public getView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const currView = await this.viewService.getView();
-      res.status(200).json(currView);
+      res.status(200).json({ view: currView.view });
     } catch (error) {
       next(error);
     }
@@ -16,12 +16,11 @@ class ViewController {
 
   public setView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { view } = req.body;
       let sender = req.body.sender;
       if (isEmpty(sender)) {
-        sender = "client"
+        sender = "client";
       }
-      await this.viewService.setView(view, sender);
+      await this.viewService.setView(req.body, sender);
       res.status(200).json();
     } catch (error) {
       next(error);
@@ -37,6 +36,17 @@ class ViewController {
         await this.viewService.deleteView();
         res.status(200).json(old.view.length);
       }
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // receives the setViewChange broadcast from a replica
+  public setShards = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { sender, view } = req.body;
+      await this.viewService.replaceView(view, sender);
+      res.status(200).json();
     } catch (error) {
       next(error);
     }

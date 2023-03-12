@@ -36,4 +36,5 @@ export const IORunning = () => {
 }
 
 // passing data from IO back to service
-export const IOEventEmitter = new EventEmitter();
+const IOEventEmitter = new EventEmitter();
+export {IOEventEmitter};
