@@ -217,6 +217,14 @@ class ViewService {
       view,
     );
   }
+
+  public async getShardReplicas(shard_id: number): Promise<string[]> {
+    let ret = []
+    await this.mutex.runExclusive(async () => {
+      ret = this.viewObject.view[shard_id].nodes
+    });
+    return ret;
+  }
 }
 
 const myService = new ViewService();
