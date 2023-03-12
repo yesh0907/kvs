@@ -18,7 +18,7 @@ class ViewController {
     try {
       let sender = req.body.sender;
       if (isEmpty(sender)) {
-        sender = "client"
+        sender = "client";
       }
       await this.viewService.setView(req.body, sender);
       res.status(200).json();
@@ -36,6 +36,17 @@ class ViewController {
         await this.viewService.deleteView();
         res.status(200).json(old.view.length);
       }
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  // receives the setViewChange broadcast from a replica
+  public setShards = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { sender, view } = req.body;
+      await this.viewService.replaceView(view, sender);
+      res.status(200).json();
     } catch (error) {
       next(error);
     }
