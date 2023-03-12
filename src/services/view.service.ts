@@ -30,12 +30,12 @@ class ViewService {
     return ret;
   }
 
-  public async setView(incomingBody: {num_shards: number, nodes: string[]}, sender = "client"): Promise<void> {
+  public async setView(incomingBody: { num_shards: number; nodes: string[] }, sender = "client"): Promise<void> {
     let oldList = [];
     const prev_num_shards = this.num_shards;
     this.num_shards = incomingBody.num_shards;
     await this.mutex.runExclusive(async () => {
-      oldList = [] // Fetch entire list of old addresses
+      oldList = []; // Fetch entire list of old addresses
 
       this.viewObject.view.forEach(shard => {
         shard.nodes.forEach(addr => {
@@ -109,7 +109,7 @@ class ViewService {
               await this.sendViewChange(extra, view, ioServerIP);
             }
             // update existing replica views
-            broadcast("viewchange:update", view);
+            broadcast("viewchange:update", { sender: ADDRESS, view: Array.from(view) });
           }
         }
       }
@@ -119,11 +119,11 @@ class ViewService {
   public async updateView(incoming: string[]): Promise<void> {
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = [];
-      for(let i = 0; i < this.num_shards; i++) {
-        this.viewObject.view.push({shard_id: i, nodes: []});
+      for (let i = 0; i < this.num_shards; i++) {
+        this.viewObject.view.push({ shard_id: i, nodes: [] });
       }
 
-      for(let i = 0; i < incoming.length; i++) {
+      for (let i = 0; i < incoming.length; i++) {
         const k = i % this.num_shards;
         this.viewObject.shard_index = k;
         this.viewObject.view[k].nodes.push(incoming[i]);
@@ -132,13 +132,12 @@ class ViewService {
   }
 
   public async replaceView(view: Shard[], sender: string): Promise<void> {
-    logger.info(`replaceVIew: ${JSON.stringify(Array.from(view))}`);
+    logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
     const prev = (await this.getView()).view;
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = view;
       for (let i = 0; i < view.length; i++) {
         if (view[i].nodes.includes(ADDRESS)) {
-          logger.info(`${ADDRESS} is in shard index ${i}: ${Array.from(view[i].nodes)}`);
           this.viewObject.shard_index = i;
           break;
         }
@@ -219,9 +218,9 @@ class ViewService {
   }
 
   public async getShardReplicas(shard_id: number): Promise<string[]> {
-    let ret = []
+    let ret = [];
     await this.mutex.runExclusive(async () => {
-      ret = this.viewObject.view[shard_id].nodes
+      ret = this.viewObject.view[shard_id].nodes;
     });
     return ret;
   }

@@ -24,12 +24,14 @@ export const onViewChangeKill = async data => {
 };
 
 export const onViewChangeUpdate = async data => {
-  const view:Shard[] = data;
-  logger.info(`received view change: ${JSON.stringify(data)}`)
-  const replicas = view.map(shard => shard.nodes).flat();
-  if (replicas.includes(ADDRESS)) {
-    logger.info("replica is making a view change");
-    await viewService.replaceView(data, "broadcast");
+  const { view, sender }: { view: Shard[]; sender: string } = data;
+  if (sender !== ADDRESS) {
+    // apply view change from another replica
+    const replicas = view.map(shard => shard.nodes).flat();
+    if (replicas.includes(ADDRESS)) {
+      logger.info(`received view change: ${JSON.stringify(view)} from ${sender}`);
+      await viewService.replaceView(view, "broadcast");
+    }
   }
 };
 
@@ -178,7 +180,7 @@ export const onCausalUpdateKvs = async data => {
   const receivedVC = clockService.parseReceivedClock(clock);
   const localVC = clockService.getVectorClock();
   if (!localVC.validateClock(receivedVC)) {
-    logger.info(`causal:kvs-update updating local kvs from ${sender}`)
+    logger.info(`causal:kvs-update updating local kvs from ${sender}`);
     localVC.updateClock(receivedVC);
     const receivedKvs = await kvsService.parseReceivedKvs(kvs);
     await kvsService.updateKvs(receivedKvs);
