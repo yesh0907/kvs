@@ -8,7 +8,7 @@ class ViewController {
   public getView = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const currView = await this.viewService.getView();
-      res.status(200).json(currView);
+      res.status(200).json({ view: currView.view });
     } catch (error) {
       next(error);
     }
