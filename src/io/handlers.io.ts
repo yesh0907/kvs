@@ -9,6 +9,7 @@ import { broadcast, IOEventEmitter } from "@/io/index.io";
 import { maxIP } from "@/utils/util";
 import queueService from "@/services/queue.service";
 import { Queue } from "@/interfaces/queue.interface";
+import { Shard } from "@/interfaces/shard.interface";
 
 export const onViewChangeKill = async data => {
   if (data.includes(ADDRESS)) {
@@ -23,9 +24,12 @@ export const onViewChangeKill = async data => {
 };
 
 export const onViewChangeUpdate = async data => {
-  if (data.includes(ADDRESS)) {
+  const view:Shard[] = data;
+  logger.info(`received view change: ${JSON.stringify(data)}`)
+  const replicas = view.map(shard => shard.nodes).flat();
+  if (replicas.includes(ADDRESS)) {
     logger.info("replica is making a view change");
-    await viewService.updateView(data);
+    await viewService.replaceView(data, "broadcast");
   }
 };
 

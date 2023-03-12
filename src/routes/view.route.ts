@@ -15,6 +15,7 @@ class ViewRoute implements Routes {
     this.router.get(`${this.path}`, this.viewController.getView);
     this.router.delete(`${this.path}`, this.viewController.deleteView);
     this.router.put(`${this.path}`, this.viewController.setView);
+    this.router.put(`${this.path}/shards`, this.viewController.setShards)
   }
 }
 
