@@ -26,6 +26,10 @@ class KvsController {
       const valDto: UpdateKVDto = req.body;
       const kvData: KV = { key: req.params.key, val: valDto.val };
 
+      // Get replicas
+      let shard_id = this.kvsService.lookUp(viewService.num_shards, kvData.key);
+      let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
+
       const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
       const localClock = clockService.getVectorClock();
       if (localClock.validateClock(receivedClock)) {
@@ -39,9 +43,9 @@ class KvsController {
       const metadata = Array.from(localClock.getClock());
       const prev = await this.kvsService.createOrUpdateKv(kvData);
       if (prev === undefined) {
-        res.status(201).json({ "causal-metadata": metadata, "shard-id": 1 });
+        res.status(201).json({ "causal-metadata": metadata, "shard-id": shard_id });
       } else {
-        res.status(200).json({ "causal-metadata": metadata, "shard-id": 1 });
+        res.status(200).json({ "causal-metadata": metadata, "shard-id": shard_id });
       }
       // broadcast write
       if (IORunning()) {
