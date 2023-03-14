@@ -52,26 +52,5 @@ class ViewController {
       next(error);
     }
   };
-
-  public kvsService = kvsService;
-
-  public reshard = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const { sender, view } = req.body;
-      await this.viewService.setView(view, sender);
-      const { count, keys } = await kvsService.getAllKeys();
-      for (const key of keys) {
-        let shard_id = this.kvsService.lookUp(viewService.num_shards, key);
-        let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
-        let val = await this.kvsService.getKv(key);
-        // Broadcast createUpdateKv with key, val to all replicas
-        if(val !== undefined) {
-          await this.kvsService.deleteKv(key);
-        }
-      }
-    } catch (error) {
-      next(error);
-    }
-  };
 }
 export default ViewController;

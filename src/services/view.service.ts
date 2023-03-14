@@ -30,6 +30,8 @@ class ViewService {
     return ret;
   }
 
+  public kvsService = kvsService;
+
   public async setView(incomingBody: { num_shards: number; nodes: string[] }, sender = "client"): Promise<void> {
     let oldList = [];
     const prev_num_shards = this.num_shards;
@@ -107,6 +109,18 @@ class ViewService {
             if (extra.length > 0) {
               // new replicas added to view
               await this.sendViewChange(extra, view, ioServerIP);
+            }
+
+            // rehashing
+            const { count, keys } = await kvsService.getAllKeys();
+            for (const key of keys) {
+              let shard_id = this.kvsService.lookUp(this.num_shards, key);
+              let replicas: Promise<string[]> = this.getShardReplicas(shard_id);
+              let val = await this.kvsService.getKv(key);
+              // Broadcast createUpdateKv with key, val to all replicas
+              if(val !== undefined) {
+                await this.kvsService.deleteKv(key);
+              }
             }
             // update existing replica views
             broadcast("viewchange:update", { sender: ADDRESS, view: Array.from(view) });
