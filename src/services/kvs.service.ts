@@ -83,7 +83,7 @@ class KvsService {
       p_pow = (p_pow * p) % m;
     }
 
-    return hash_value;
+    return Math.abs(hash_value);
   }
 }
 
