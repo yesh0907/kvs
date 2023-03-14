@@ -7,8 +7,6 @@ import ioClient from "@/io/client/index.client";
 import ioServer from "@/io/server/index.server";
 import { broadcast, IOEventEmitter } from "@/io/index.io";
 import { maxIP } from "@/utils/util";
-import queueService from "@/services/queue.service";
-import { Queue } from "@/interfaces/queue.interface";
 import { Shard } from "@/interfaces/shard.interface";
 
 export const onViewChangeKill = async data => {
@@ -54,35 +52,22 @@ export const onKvsWrite = async data => {
 
   const equal = localVC.equals(receivedVC);
   const localVal = await kvsService.getKv(key);
-  if (equal || localVC.compareClocks(sender, receivedVC)) {
-    if (equal) {
-      // concurrent b/c they have the same VC
-      logger.info(`concurrent and conflicting operations from ${sender}`);
-      if (localVal === undefined || (localVal !== undefined && maxIP(sender, ADDRESS) === sender)) {
-        // write to kvs if sender has higher IP
-        localVC.updateClock(receivedVC);
-        await kvsService.createOrUpdateKv(kvData);
-        logger.info(`write ${key}=${val} to kvs`);
-      } else {
-        logger.info(`telling sender to use ${key}=${localVal}`);
-        broadcast("kvs:write", { key, val: localVal, sender: ADDRESS, "causal-metadata": Array.from(localVC.getClock()) });
-      }
-    } else {
+  if (equal) {
+    // concurrent b/c they have the same VC
+    logger.info(`concurrent and conflicting operations from ${sender}`);
+    if (localVal === undefined || (localVal !== undefined && maxIP(sender, ADDRESS) === sender)) {
+      // write to kvs if sender has higher IP
       localVC.updateClock(receivedVC);
       await kvsService.createOrUpdateKv(kvData);
       logger.info(`write ${key}=${val} to kvs`);
+    } else {
+      logger.info(`telling sender to use ${key}=${localVal}`);
+      broadcast("kvs:write", { key, val: localVal, sender: ADDRESS, "causal-metadata": Array.from(localVC.getClock()) });
     }
   } else {
-    // add to queue
-    const q: Queue = {
-      action: "write",
-      key,
-      val,
-      sender,
-      vc: clock,
-    };
-    logger.info(`pushed write ${key}=${val} from ${sender} to queue`);
-    queueService.push(q);
+    localVC.updateClock(receivedVC);
+    await kvsService.createOrUpdateKv(kvData);
+    logger.info(`write ${key}=${val} to kvs`);
   }
 };
 
@@ -97,37 +82,25 @@ export const onKvsDelete = async data => {
   const equal = localVC.equals(receivedVC);
   const localVal = await kvsService.getKv(key);
 
-  if (equal || localVC.compareClocks(sender, receivedVC)) {
-    if (equal) {
-      // concurrent b/c they have the same VC
-      logger.info(`concurrent and conflicting operation from ${sender}}`);
-      if (localVal !== undefined && maxIP(sender, ADDRESS) === sender) {
-        // delete from kvs if sender has higher IP
-        const prev = await kvsService.deleteKv(key);
-        logger.info(`deleted ${key} from kvs`);
-        if (prev !== undefined) {
-          localVC.updateClock(receivedVC);
-        }
-      } else {
-        logger.info(`not deleting ${key} from kvs`);
-      }
-    } else {
+  if (equal) {
+    // concurrent b/c they have the same VC
+    logger.info(`concurrent and conflicting operation from ${sender}}`);
+    if (localVal !== undefined && maxIP(sender, ADDRESS) === sender) {
+      // delete from kvs if sender has higher IP
       const prev = await kvsService.deleteKv(key);
       logger.info(`deleted ${key} from kvs`);
       if (prev !== undefined) {
         localVC.updateClock(receivedVC);
       }
+    } else {
+      logger.info(`not deleting ${key} from kvs`);
     }
   } else {
-    // add to queue
-    const q: Queue = {
-      action: "delete",
-      key,
-      sender,
-      vc: clock,
-    };
-    logger.info(`pushed delete ${key} from ${sender} to queue`);
-    queueService.push(q);
+    const prev = await kvsService.deleteKv(key);
+    logger.info(`deleted ${key} from kvs`);
+    if (prev !== undefined) {
+      localVC.updateClock(receivedVC);
+    }
   }
 };
 
@@ -155,17 +128,14 @@ export const onCausalUpdateKey = async data => {
     } else {
       await kvsService.deleteKv(key);
     }
-    IOEventEmitter.emit(`causal:${key}-consistent`, { key, value, exists });
   }
+  IOEventEmitter.emit(`causal:${key}-consistent`, { key, value, exists });
 };
 
 export const onCausalGetKvs = async data => {
   const { clock, sender }: { clock: [string, number][]; sender: string } = data;
   const receivedVC = clockService.parseReceivedClock(clock);
   const localVC = clockService.getVectorClock();
-  logger.info(`received causal:get-kvs from ${sender}`);
-  logger.info(`local clock: ${localVC.getClock()}`);
-  logger.info(`received clock: ${receivedVC.getClock()}`);
   // local clock should be ahead of received clock to help with causal consistency - local clock > received clock
   if (localVC.validateClock(receivedVC)) {
     logger.info(`local clock ahead of received clock from ${sender}`);
@@ -184,9 +154,9 @@ export const onCausalUpdateKvs = async data => {
     localVC.updateClock(receivedVC);
     const receivedKvs = await kvsService.parseReceivedKvs(kvs);
     await kvsService.updateKvs(receivedKvs);
-    const data = await kvsService.getAllKeys();
-    IOEventEmitter.emit(`causal:kvs-consistent`, data);
   }
+  const allKeys = await kvsService.getAllKeys();
+  IOEventEmitter.emit(`causal:kvs-consistent`, allKeys);
 };
 
 export const onReplicationConverge = async data => {
