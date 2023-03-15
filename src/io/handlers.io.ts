@@ -5,9 +5,12 @@ import clockService from "@/services/clock.service";
 import kvsService from "@/services/kvs.service";
 import ioClient from "@/io/client/index.client";
 import ioServer from "@/io/server/index.server";
-import { broadcast, IOEventEmitter } from "@/io/index.io";
+import { broadcast, IOEventEmitter, sendTo } from "@/io/index.io";
 import { maxIP } from "@/utils/util";
 import { Shard } from "@/interfaces/shard.interface";
+import { KvOperation } from "@/interfaces/kvOperation.interface";
+import { KV } from "@/interfaces/kv.interface";
+import { ProxyResponse } from "@/interfaces/proxyRespnse.interface";
 
 export const onViewChangeKill = async data => {
   if (data.includes(ADDRESS)) {
@@ -84,7 +87,7 @@ export const onKvsDelete = async data => {
 
   if (equal) {
     // concurrent b/c they have the same VC
-    logger.info(`concurrent and conflicting operation from ${sender}}`);
+    logger.info(`concurrent and conflicting operation from ${sender}`);
     if (localVal !== undefined && maxIP(sender, ADDRESS) === sender) {
       // delete from kvs if sender has higher IP
       const prev = await kvsService.deleteKv(key);
@@ -170,4 +173,65 @@ export const onReplicationConverge = async data => {
     localVc.updateClock(receivedVc);
     await kvsService.updateKvs(receivedKvs);
   }
+};
+
+export const onShardProxyRequest = async data => {
+  const { shard_id, req, sender }: { shard_id: number; req: { id: number; op: KvOperation }; sender: string } = data;
+  const shardIndex = await viewService.getShardIndex();
+  if (shard_id === shardIndex) {
+    const response:ProxyResponse = {
+      id: req.id,
+      status: 200,
+      metadata: []
+    };
+    const { op } = req;
+    if (op.type === "write") {
+      const kvData:KV = { key: op.key, val: op.val };
+      const receivedClock = clockService.parseReceivedClock(op.metadata);
+      const { prev, metadata } = await kvsService.writeKv(shardIndex, kvData, receivedClock);
+      response.metadata = metadata;
+      if (prev !== undefined) {
+        response.status = 200;
+      } else {
+        response.status = 201;
+      }
+    } else if (op.type === "delete") {
+      const receivedClock = clockService.parseReceivedClock(op.metadata);
+      const { prev, metadata } = await kvsService.removeKv(shardIndex, op.key, receivedClock);
+      response.metadata = metadata;
+      if (prev === undefined) {
+        response.status = 404;
+        response.exists = false;
+      } else {
+        response.status = 200;
+        response.exists = true;
+      }
+    }
+    else {
+      const receivedClock = clockService.parseReceivedClock(op.metadata);
+      const { success, val, metadata } = await kvsService.readKv(op.key, receivedClock);
+      if (success) {
+        response.metadata = metadata;
+        if (val !== undefined) {
+          response.status = 200;
+          response.val = val;
+          response.exists = true;
+        } else {
+          response.status = 404;
+          response.exists = false;
+        }
+      } else {
+        response.status = 500;
+      }
+    }
+    sendTo(sender, "shard:proxy-response", response);
+  }
+};
+
+export const onShardProxyResponse = async data => {
+  const { id, metadata }:ProxyResponse = data;
+  const receivedClock = clockService.parseReceivedClock(metadata);
+  const localClock = clockService.getVectorClock();
+  localClock.updateClock(receivedClock);
+  IOEventEmitter.emit(`shard:proxy-response:${id}`, data);
 };

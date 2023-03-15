@@ -3,7 +3,7 @@ import { logger } from "@utils/logger";
 import kvsService from "@/services/kvs.service";
 import clockService from "@/services/clock.service";
 import viewService from "@/services/view.service";
-import { onCausalGetKey, onCausalGetKvs, onCausalUpdateKey, onCausalUpdateKvs, onKvsDelete, onKvsWrite, onReplicationConverge, onViewChangeKill, onViewChangeUpdate } from "@io/handlers.io";
+import { onCausalGetKey, onCausalGetKvs, onCausalUpdateKey, onCausalUpdateKvs, onKvsDelete, onKvsWrite, onReplicationConverge, onShardProxyRequest, onShardProxyResponse, onViewChangeKill, onViewChangeUpdate } from "@io/handlers.io";
 import { NODE_ENV } from "@/config";
 // Handles socket.io server-side logic
 class IOServer {
@@ -53,6 +53,7 @@ class IOServer {
     await this.addConnection(socket);
     socket.on("relay-broadcast", this.relayBroadcast.bind(this, socket));
     socket.on("relay-broadcastAck", this.relayBroadcastAck.bind(this, socket));
+    socket.on("relay-send-to", this.relaySendTo.bind(this, socket));
     socket.on("broadcast-ping", (ack) => ack());
     socket.on("disconnect", this.onDisconnect.bind(this, socket));
     // register event handlers
@@ -69,6 +70,8 @@ class IOServer {
     socket.on("causal:get-kvs", onCausalGetKvs);
     socket.on("causal:update-kvs", onCausalUpdateKvs);
     socket.on("replication:converge", onReplicationConverge);
+    socket.on("shard:proxy-request", onShardProxyRequest);
+    socket.on("shard:proxy-response", onShardProxyResponse);
   }
 
   private async addConnection(socket: Socket) {
@@ -102,6 +105,13 @@ class IOServer {
     socket.broadcast.timeout(10000).emit(event, broadcastData, async (err, responses) => {
       await viewService.checkReplicas(err, responses);
     });
+  }
+
+  private relaySendTo(socket: Socket, data) {
+    const { replica, event, data: eventData } = data;
+    logger.info(`relaying message from ${socket.handshake.address} to ${replica} with event ${event} and data: ${JSON.stringify(eventData)}`);
+    const targetSocket = this.connections[replica];
+    targetSocket.emit(event, eventData);
   }
 
   private onDisconnect(socket: Socket, reason: string) {

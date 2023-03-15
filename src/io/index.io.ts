@@ -26,7 +26,10 @@ export const broadcastAck = (event: string, data: any) => {
 export const sendTo = (replica: string, event: string, data: any) => {
   if (ioServer.isListening()) {
     ioServer.sendTo(replica, event, data);
-  } else {
+  } else if (ioClient.isConnected()) {
+    ioClient.sendTo(replica, event, data);
+  }
+  else {
     logger.warn("can't use sendTo as client");
   }
 }

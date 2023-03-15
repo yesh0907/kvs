@@ -1,6 +1,6 @@
 import { io as ioc, type Socket } from "socket.io-client";
 import { logger } from "@utils/logger";
-import { onViewChangeKill, onViewChangeUpdate, onKvsAll, onKvsWrite, onKvsDelete, onCausalGetKey, onCausalUpdateKey, onReplicationConverge, onCausalGetKvs, onCausalUpdateKvs } from "@io/handlers.io";
+import { onViewChangeKill, onViewChangeUpdate, onKvsAll, onKvsWrite, onKvsDelete, onCausalGetKey, onCausalUpdateKey, onReplicationConverge, onCausalGetKvs, onCausalUpdateKvs, onShardProxyRequest, onShardProxyResponse } from "@io/handlers.io";
 import viewService from "@/services/view.service";
 import { broadcast, broadcastAck } from "@/io/index.io";
 import { NODE_ENV } from "@/config";
@@ -62,6 +62,8 @@ class IOClient {
     this.socket.on("causal:get-kvs", onCausalGetKvs);
     this.socket.on("causal:update-kvs", onCausalUpdateKvs);
     this.socket.on("replication:converge", onReplicationConverge);
+    this.socket.on("shard:proxy-request", onShardProxyRequest);
+    this.socket.on("shard:proxy-response", onShardProxyResponse);
   }
 
   private onConnect() {
@@ -110,6 +112,15 @@ class IOClient {
         this.socket.emit("relay-broadcastAck", { event, data });
       }
     });
+  }
+
+  public sendTo(replica: string, event: string, data: any) {
+    logger.info(`sending ${event} to ${replica} with data: ${JSON.stringify(data)}`);
+    if (replica === this.getIP()) {
+      this.socket.emit(event, data);
+    } else {
+      this.socket.emit("relay-send-to", { replica, event, data });
+    }
   }
 }
 

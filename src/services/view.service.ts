@@ -224,6 +224,14 @@ class ViewService {
     });
     return ret;
   }
+
+  public async getShardIndex(): Promise<number> {
+    let ret = -1;
+    await this.mutex.runExclusive(async () => {
+      ret = this.viewObject.shard_index;
+    });
+    return ret;
+  }
 }
 
 const myService = new ViewService();

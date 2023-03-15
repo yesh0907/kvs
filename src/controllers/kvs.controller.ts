@@ -5,9 +5,9 @@ import { UpdateKVDto } from "@/dtos/kv.dto";
 import { HttpException } from "@/exceptions/HttpException";
 import { KV } from "@/interfaces/kv.interface";
 import { isEmpty } from "@/utils/util";
-import { ADDRESS } from "@/config";
-import { broadcast, IORunning } from "@/io/index.io";
 import viewService from "@/services/view.service";
+import { logger } from "@/utils/logger";
+import { KvOperation } from "@/interfaces/kvOperation.interface";
 
 const CAUSAL_METADATA_KEY = "causal-metadata";
 
@@ -25,32 +25,32 @@ class KvsController {
       }
       const valDto: UpdateKVDto = req.body;
       const kvData: KV = { key: req.params.key, val: valDto.val };
-
-      // Get replicas
-      let shard_id = this.kvsService.lookUp(viewService.num_shards, kvData.key);
-      let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
-
       const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
-      const localClock = clockService.getVectorClock();
-      if (localClock.validateClock(receivedClock)) {
-        // already causally consistent
-        localClock.incrementClock(ADDRESS);
+
+      const shard_id = this.kvsService.lookUp(viewService.num_shards, kvData.key);
+      const shardIndex = await viewService.getShardIndex();
+      if (shard_id !== shardIndex) {
+        // proxy request
+        logger.info(`Proxying request to shard ${shard_id}`);
+        const op: KvOperation = {
+          key: kvData.key,
+          val: kvData.val,
+          metadata: Array.from(receivedClock.getClock()),
+          type: "write",
+        };
+        const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
+        if (proxyRes.status !== 503) {
+          res.status(proxyRes.status).json({ "causal-metadata": proxyRes.metadata });
+        } else {
+          res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
+        }
       } else {
-        // not causally consistent - but we can still update
-        localClock.updateClock(receivedClock);
-        localClock.incrementClock(ADDRESS);
-      }
-      const metadata = Array.from(localClock.getClock());
-      const prev = await this.kvsService.createOrUpdateKv(kvData);
-      if (prev === undefined) {
-        res.status(201).json({ "causal-metadata": metadata, "shard-id": shard_id });
-      } else {
-        res.status(200).json({ "causal-metadata": metadata, "shard-id": shard_id });
-      }
-      // broadcast write
-      if (IORunning()) {
-        const broadcastData = { key: kvData.key, val: kvData.val, "causal-metadata": metadata, sender: ADDRESS, "shard-id": shard_id };
-        broadcast("kvs:write", broadcastData);
+        const { prev, metadata } = await this.kvsService.writeKv(shardIndex, kvData, receivedClock);
+        if (prev === undefined) {
+          res.status(201).json({ "causal-metadata": metadata });
+        } else {
+          res.status(200).json({ "causal-metadata": metadata });
+        }
       }
     } catch (error) {
       next(error);
@@ -64,25 +64,11 @@ class KvsController {
         throw new HttpException(418, "uninitialized");
       }
       const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
-      const localClock = clockService.getVectorClock();
-
-      // getting replicas which contain all shards altogether
-      for (let shard_id = 0; shard_id < viewService.num_shards; shard_id++) {
-        let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
-      }
-
-      if (localClock.validateClock(receivedClock)) {
-        const metadata = Array.from(localClock.getClock());
-        const keys = await this.kvsService.getAllKeys();
-        res.status(200).json({ "causal-metadata": metadata, ...keys });
+      const { success, keys, count, metadata } = await this.kvsService.retreiveAllKeys(receivedClock);
+      if (success) {
+        res.status(200).json({ keys, count, "causal-metadata": metadata });
       } else {
-        const { success, value }: { success: boolean; value: any } = await clockService.getCausalConsistency(undefined, receivedClock);
-        if (success) {
-          const metadata = Array.from(localClock.getClock());
-          res.status(200).json({ "causal-metadata": metadata, ...value });
-        } else {
-          throw new HttpException(500, "timed out while waiting for depended updates");
-        }
+        throw new HttpException(500, "timed out while waiting for depended updates");
       }
     } catch (error) {
       next(error);
@@ -100,49 +86,42 @@ class KvsController {
       }
 
       const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
-      const localClock = clockService.getVectorClock();
       const key = req.params.key as string;
-      // Get replicas
-      let shard_id = this.kvsService.lookUp(viewService.num_shards, key);
-      let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
-      if (localClock.validateClock(receivedClock)) {
-        let val = await this.kvsService.getKv(key);
-        if (IORunning() && val === undefined) {
-          // check other replicas for the key
-          const { success, value, exists }: { success: boolean; value: string; exists: boolean } = await clockService.getCausalConsistency(
-            key,
-            receivedClock,
-          );
-          if (success) {
-            if (exists) {
-              val = value;
-            }
-          } else {
-            throw new HttpException(500, "timed out while waiting for depended updates");
-          }
-        }
-        const metadata = Array.from(localClock.getClock());
-        if (val === undefined) {
-          res.status(404).json({ "causal-metadata": metadata, "shard-id": shard_id });
+
+      const shard_id = this.kvsService.lookUp(viewService.num_shards, key);
+      const shardIndex = await viewService.getShardIndex();
+      if (shard_id !== shardIndex) {
+        // proxy request
+        logger.info(`Proxying request to shard ${shard_id}`);
+        const op: KvOperation = {
+          key,
+          metadata: Array.from(receivedClock.getClock()),
+          type: "read",
+        };
+        const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
+        if (proxyRes.status === 503) {
+          res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
+        } else if (proxyRes.status === 500) {
+          throw new HttpException(500, "timed out while waiting for depended updates");
         } else {
-          res.status(200).json({ val, "causal-metadata": metadata, "shard-id": shard_id });
+          const resData = {
+            "causal-metadata": proxyRes.metadata,
+          };
+          if (proxyRes.exists) {
+            resData["val"] = proxyRes.val;
+          }
+          res.status(proxyRes.status).json(resData);
         }
       } else {
-        if (IORunning()) {
-          const { success, value, exists }: { success: boolean; value: string; exists: boolean } = await clockService.getCausalConsistency(
-            key,
-            receivedClock,
-          );
-          if (success) {
-            const metadata = Array.from(localClock.getClock());
-            if (exists) {
-              res.status(200).json({ val: value, "causal-metadata": metadata, "shard-id": shard_id });
-            } else {
-              res.status(404).json({ "causal-metadata": metadata, "shard-id": shard_id });
-            }
+        const { success, val, metadata } = await this.kvsService.readKv(key, receivedClock);
+        if (success) {
+          if (val === undefined) {
+            res.status(404).json({ "causal-metadata": metadata });
           } else {
-            throw new HttpException(500, "timed out while waiting for depended updates");
+            res.status(200).json({ "causal-metadata": metadata, val });
           }
+        } else {
+          throw new HttpException(500, "timed out while waiting for depended updates");
         }
       }
     } catch (error) {
@@ -159,27 +138,32 @@ class KvsController {
       if (view.view.length === 0) {
         throw new HttpException(418, "uninitialized");
       }
-
       const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
-      const localClock = clockService.getVectorClock();
-      if (localClock.validateClock(receivedClock)) {
-        const key = req.params.key as string;
-        const prev = await this.kvsService.deleteKv(key);
-        let metadata = Array.from(localClock.getClock());
-        // Get replicas
-        let shard_id = this.kvsService.lookUp(viewService.num_shards, key);
-        let replicas: Promise<string[]> = viewService.getShardReplicas(shard_id);
-        if (prev === undefined) {
-          res.status(404).json({ "causal-metadata": metadata, "shard-id": shard_id });
+      const key = req.params.key as string;
+
+      const shard_id = this.kvsService.lookUp(viewService.num_shards, key);
+      const shardIndex = await viewService.getShardIndex();
+
+      if (shard_id !== shardIndex) {
+        // proxy request
+        logger.info(`Proxying request to shard ${shard_id}`);
+        const op: KvOperation = {
+          key,
+          metadata: Array.from(receivedClock.getClock()),
+          type: "delete",
+        };
+        const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
+        if (proxyRes.status !== 503) {
+          res.status(proxyRes.status).json({ "causal-metadata": proxyRes.metadata });
         } else {
-          localClock.incrementClock(ADDRESS);
-          metadata = Array.from(localClock.getClock());
-          res.status(200).json({ "causal-metadata": metadata, "shard-id": shard_id });
-          // broadcast delete
-          if (IORunning()) {
-            const broadcastData = { key, "causal-metadata": metadata, sender: ADDRESS, "shard-id": shard_id };
-            broadcast("kvs:delete", broadcastData);
-          }
+          res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
+        }
+      } else {
+        const { prev, metadata } = await this.kvsService.removeKv(shardIndex, key, receivedClock);
+        if (prev === undefined) {
+          res.status(404).json({ "causal-metadata": metadata });
+        } else {
+          res.status(200).json({ "causal-metadata": metadata });
         }
       }
     } catch (error) {
