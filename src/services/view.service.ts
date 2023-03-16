@@ -118,6 +118,8 @@ class ViewService {
               let replicas: Promise<string[]> = this.getShardReplicas(shard_id);
               let val = await this.kvsService.getKv(key);
               // Broadcast createUpdateKv with key, val to all replicas
+              const broadcastData = { key: key, val: val, sender: ADDRESS, view: replicas };
+              broadcast("kvs:write", broadcastData);
               if(val !== undefined) {
                 await this.kvsService.deleteKv(key);
               }
