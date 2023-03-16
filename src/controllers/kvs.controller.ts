@@ -1,13 +1,12 @@
 import { NextFunction, Request, Response } from "express";
 import kvsService from "@/services/kvs.service";
-import clockService from "@/services/clock.service";
 import { UpdateKVDto } from "@/dtos/kv.dto";
 import { HttpException } from "@/exceptions/HttpException";
-import { KV } from "@/interfaces/kv.interface";
+import { KV, KvRequest } from "@/interfaces/kv.interface";
 import { isEmpty } from "@/utils/util";
 import viewService from "@/services/view.service";
 import { logger } from "@/utils/logger";
-import { KvOperation } from "@/interfaces/kvOperation.interface";
+import { CausalMetadata } from "@/interfaces/causalContext.interface";
 
 const CAUSAL_METADATA_KEY = "causal-metadata";
 
@@ -25,17 +24,18 @@ class KvsController {
       }
       const valDto: UpdateKVDto = req.body;
       const kvData: KV = { key: req.params.key, val: valDto.val };
-      const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
+      const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
+      logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
 
       const shard_id = this.kvsService.lookUp(viewService.num_shards, kvData.key);
       const shardIndex = await viewService.getShardIndex();
       if (shard_id !== shardIndex) {
         // proxy request
         logger.info(`Proxying request to shard ${shard_id}`);
-        const op: KvOperation = {
+        const op: KvRequest = {
           key: kvData.key,
           val: kvData.val,
-          metadata: Array.from(receivedClock.getClock()),
+          metadata: receivedMetadata,
           type: "write",
         };
         const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
@@ -45,7 +45,7 @@ class KvsController {
           res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
         }
       } else {
-        const { prev, metadata } = await this.kvsService.writeKv(shardIndex, kvData, receivedClock);
+        const { prev, metadata } = await this.kvsService.writeKv(shardIndex, kvData, receivedMetadata);
         if (prev === undefined) {
           res.status(201).json({ "causal-metadata": metadata });
         } else {
@@ -63,8 +63,9 @@ class KvsController {
       if (view.view.length === 0) {
         throw new HttpException(418, "uninitialized");
       }
-      const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
-      const { success, keys, count, metadata } = await this.kvsService.retreiveAllKeys(receivedClock);
+      const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
+      logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
+      const { success, keys, count, metadata } = await this.kvsService.retreiveAllKeys(receivedMetadata);
       if (success) {
         res.status(200).json({ keys, count, "causal-metadata": metadata });
       } else {
@@ -85,7 +86,8 @@ class KvsController {
         throw new HttpException(418, "uninitialized");
       }
 
-      const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
+      const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
+      logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
       const key = req.params.key as string;
 
       const shard_id = this.kvsService.lookUp(viewService.num_shards, key);
@@ -93,9 +95,9 @@ class KvsController {
       if (shard_id !== shardIndex) {
         // proxy request
         logger.info(`Proxying request to shard ${shard_id}`);
-        const op: KvOperation = {
+        const op: KvRequest = {
           key,
-          metadata: Array.from(receivedClock.getClock()),
+          metadata: receivedMetadata,
           type: "read",
         };
         const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
@@ -113,7 +115,7 @@ class KvsController {
           res.status(proxyRes.status).json(resData);
         }
       } else {
-        const { success, val, metadata } = await this.kvsService.readKv(key, receivedClock);
+        const { success, val, metadata } = await this.kvsService.readKv(key, receivedMetadata);
         if (success) {
           if (val === undefined) {
             res.status(404).json({ "causal-metadata": metadata });
@@ -138,7 +140,8 @@ class KvsController {
       if (view.view.length === 0) {
         throw new HttpException(418, "uninitialized");
       }
-      const receivedClock = clockService.parseReceivedClock(req.body[CAUSAL_METADATA_KEY]);
+      const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
+      logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
       const key = req.params.key as string;
 
       const shard_id = this.kvsService.lookUp(viewService.num_shards, key);
@@ -147,9 +150,9 @@ class KvsController {
       if (shard_id !== shardIndex) {
         // proxy request
         logger.info(`Proxying request to shard ${shard_id}`);
-        const op: KvOperation = {
+        const op: KvRequest = {
           key,
-          metadata: Array.from(receivedClock.getClock()),
+          metadata: receivedMetadata,
           type: "delete",
         };
         const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
@@ -159,7 +162,7 @@ class KvsController {
           res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
         }
       } else {
-        const { prev, metadata } = await this.kvsService.removeKv(shardIndex, key, receivedClock);
+        const { prev, metadata } = await this.kvsService.removeKv(shardIndex, key, receivedMetadata);
         if (prev === undefined) {
           res.status(404).json({ "causal-metadata": metadata });
         } else {

@@ -1,6 +1,8 @@
+import { CausalContext } from "./causalContext.interface";
+
 export interface KvOperation {
   type: "write" | "delete" | "read" | "readall";
-  metadata: [string, number][];
+  causalContext: CausalContext;
   key?: string;
   val?: string;
 }

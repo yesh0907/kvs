@@ -1,38 +1,69 @@
 import { ADDRESS } from "@/config";
-import { broadcast, IORunning } from "@/io/index.io";
-import kvsService from "@/services/kvs.service";
-import clockService from "@/services/clock.service";
-import viewService from "@/services/view.service";
-import ioServer from "@/io/server/index.server";
+import { broadcast, IOEventEmitter, IORunning } from "@/io/index.io";
+import { CausalContext, CausalMetadata } from "@/interfaces/causalContext.interface";
+import { KvOperation } from "@/interfaces/kvOperation.interface";
+import causalContexts from "@/models/causalContexts.model";
+import { getLatestCausalContext } from "./causalContext.service";
+import { logger } from "@/utils/logger";
+import { ValWithCausalContext } from "@/interfaces/kv.interface";
 
-class ReplicationService {
-  begin() {
-    setInterval(async () => {
-      await this.tryDownReplicas();
-      this.converge();
-    }, 10000);
-  }
+type operations = "write" | "delete" | "read" | "readall";
+export const replicateUpdates = (op: operations, key: string, val: string, causalContext: CausalContext) => {
+  if (IORunning()) {
+    const kvOp: KvOperation = {
+      type: op,
+      key,
+      val,
+      causalContext,
+    };
+    broadcast("replicate:updates", { sender: ADDRESS, op: kvOp });
 
-  // try to get down replicas to connect (if they are up)
-  public async tryDownReplicas() {
-    const {view} = await viewService.getView();
-    if (ioServer.isListening()) {
-      const connections = Object.keys(ioServer.getConnections());
-      const downReplicas = view.filter(replica => replica !== ADDRESS && !connections.includes(replica));
-      if (downReplicas.length > 0) {
-        await viewService.sendViewChange(downReplicas, view);
-      }
-    }
-  }
+    causalContexts[ADDRESS] = causalContext;
 
-  public converge() {
-    if (IORunning()) {
-      // broadcast converge
-      const kvs = Array.from(kvsService.getCurrentKvs());
-      const vc = Array.from(clockService.getVectorClock().getClock());
-      broadcast("replication:converge", { sender: ADDRESS, kvs, vc });
-    }
+    setTimeout(checkEventualConsistency, 10000);
   }
 }
 
-export default ReplicationService;
+export const checkEventualConsistency = () => {
+  const latestCausalContext = getLatestCausalContext(causalContexts);
+  latestCausalContext;
+  // finish later
+}
+
+export const getConsistentVal = async (key: string, receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any; exists: boolean }> => {
+  logger.info(`getting causal consistency for key: ${key} with received metadata: ${JSON.stringify(receivedMetadata)}`);
+  const message = { metadata: receivedMetadata, sender: ADDRESS, key};
+  broadcast("causal:get-key", message);
+  const res = await new Promise<{ success: boolean; value: ValWithCausalContext; exists: boolean }>(resolve => {
+    const timeout = setTimeout(() => {
+      logger.error(`timeout waiting for causal consistency on key: ${key}`);
+      resolve({ success: false, value: undefined, exists: false });
+    }, 20000);
+    IOEventEmitter.once(`causal:${key}-consistent`, data => {
+      clearTimeout(timeout);
+      const { key: k, value, exists }: { key: string; value: ValWithCausalContext; exists: boolean } = data;
+      logger.info(`received causal consistency for key: ${k}`);
+      resolve({ success: true, value, exists });
+    });
+  });
+
+  return res;
+}
+
+export const getConsistentKeys = async (receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any; exists: boolean }> => {
+  logger.info(`getting causal consistency for kvs with received metadata: ${JSON.stringify(receivedMetadata)}`);
+  const message = { metadata: receivedMetadata, sender: ADDRESS };
+  broadcast("causal:get-kvs", message);
+  const res = await new Promise<{ success: boolean; value: any; exists: boolean }>(resolve => {
+    const timeout = setTimeout(() => {
+      logger.error(`timeout waiting for causal consistency on kvs`);
+      resolve({ success: false, value: undefined, exists: false });
+    }, 20000);
+    IOEventEmitter.once(`causal:kvs-consistent`, data => {
+      clearTimeout(timeout);
+      logger.info(`received causal consistency for kvs`);
+      resolve({ success: true, value: data, exists: true });
+    });
+  });
+  return res;
+}

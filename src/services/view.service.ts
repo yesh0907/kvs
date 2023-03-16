@@ -19,7 +19,7 @@ class ViewService {
 
   constructor() {
     this.viewObject.view = [];
-    this.viewObject.shard_index = -1;
+    this.viewObject.shard_index = 0;
   }
 
   public async getView(): Promise<{ view: Shard[] }> {
@@ -165,7 +165,7 @@ class ViewService {
     await this.mutex.runExclusive(async () => {
       await kvsService.clearKvs();
       this.viewObject.view = [];
-      this.viewObject.shard_index = -1;
+      this.viewObject.shard_index = 0;
     });
   }
 
