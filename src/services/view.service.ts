@@ -7,8 +7,6 @@ import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import axios from "axios";
 import kvsService from "@/services/kvs.service";
-// FIX LATER
-// import ReplicationService from "@/services/replication.service";
 import { Shard } from "@/interfaces/shard.interface";
 import { makeEventuallyConsistent } from "./replication.service";
 
