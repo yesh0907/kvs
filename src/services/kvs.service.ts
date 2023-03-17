@@ -4,6 +4,7 @@ import { KV, KvRequest, KvStore, ValWithCausalContext } from "@/interfaces/kv.in
 import { ProxyResponse } from "@/interfaces/proxyRespnse.interface";
 import { broadcast, IOEventEmitter, IORunning } from "@/io/index.io";
 import kvsModel from "@/models/kvs.model";
+import updates from "@/models/update.model";
 import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import { getConsistentKeys, getConsistentVal } from "./replication.service";
@@ -109,15 +110,18 @@ class KvsService {
     }
   }
 
-  public async createOrUpdateKv(kvData: KV, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
+  public async createOrUpdateKv(kvData: KV, causalMetadata: CausalMetadata, valWithContext?: ValWithCausalContext): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
-    const val: ValWithCausalContext = {
+    let val: ValWithCausalContext = {
       val: kvData.val,
       causalContext: {
         timestamp,
         causalMetadata,
       },
+    }
+    if (valWithContext !== undefined) {
+      val = valWithContext;
     }
     await this.mutex.runExclusive(async () => {
       const prev = this.kvs[kvData.key];
@@ -126,6 +130,7 @@ class KvsService {
       }
       this.kvs[kvData.key] = val;
     });
+    updates.last = timestamp;
     return { prev: prevVal, val };
   }
 
@@ -146,15 +151,18 @@ class KvsService {
     return value;
   }
 
-  public async deleteKv(key: string, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
+  public async deleteKv(key: string, causalMetadata: CausalMetadata, valWithContext?: ValWithCausalContext): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
-    const val: ValWithCausalContext = {
+    let val: ValWithCausalContext = {
       val: undefined,
       causalContext: {
         timestamp,
         causalMetadata,
       },
+    }
+    if (valWithContext !== undefined) {
+      val = valWithContext;
     }
     await this.mutex.runExclusive(async () => {
       const prev = this.kvs[key];
@@ -163,6 +171,7 @@ class KvsService {
         this.kvs[key] = val;
       }
     });
+    updates.last = timestamp;
     return { prev: prevVal, val };
   }
 
@@ -170,23 +179,14 @@ class KvsService {
     await this.mutex.runExclusive(async () => {
       this.kvs = { ...this.kvs, ...newKvs };
     });
+    updates.last = Date.now();
   }
 
   public async clearKvs(): Promise<void> {
     await this.mutex.runExclusive(async () => {
       this.kvs = {};
     });
-  }
-
-  public parseReceivedKvs(metadata: [string, string][]): Map<string, string> {
-    const kvs = new Map<string, string>();
-    if (metadata !== undefined) {
-      metadata.reduce((kvs, [key, val]) => {
-        kvs.set(key, val);
-        return kvs;
-      }, kvs);
-    }
-    return kvs;
+    updates.last = Date.now();
   }
 
   public getCurrentKvs() {
@@ -239,7 +239,7 @@ class KvsService {
     broadcast("shard:proxy-request", { shard_id, req: { id: reqId, op }, sender: ADDRESS });
     const res = await new Promise<ProxyResponse>(resolve => {
       const timeout = setTimeout(() => {
-        logger.error(`timeout waiting for proxy request to shard: ${shard_id}`);
+        logger.error(`timeout waiting for proxy request to shard: ${shard_id} for req ${reqId}`);
         resolve({ id: reqId, status: 503 });
       }, 20000);
       IOEventEmitter.once(`shard:proxy-response:${reqId}`, (data: ProxyResponse) => {

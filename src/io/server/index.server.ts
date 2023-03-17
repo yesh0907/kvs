@@ -41,6 +41,7 @@ class IOServer {
     if (!this.existed) {
       this.server.on("connection", this.onConnection.bind(this));
     }
+    this.existed = true;
     logger.info(`=================================`);
     logger.info(`🌐 IO Server handling connections`);
     logger.info(`=================================`);
@@ -50,7 +51,6 @@ class IOServer {
   public shutdown() {
     this.server.disconnectSockets();
     this.listening = false;
-    this.existed = true;
     this.connections = {};
   }
 
@@ -74,9 +74,9 @@ class IOServer {
     socket.on("causal:update-key", onCausalUpdateKey);
     socket.on("causal:get-kvs", onCausalGetKvs);
     socket.on("causal:update-kvs", onCausalUpdateKvs);
-    socket.on("replication:converge", onReplicationConverge);
     socket.on("shard:proxy-request", onShardProxyRequest);
     socket.on("shard:proxy-response", onShardProxyResponse);
+    socket.on("replication:converge", onReplicationConverge);
   }
 
   private async addConnection(socket: Socket) {

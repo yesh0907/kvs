@@ -1,6 +1,6 @@
 import { io as ioc, type Socket } from "socket.io-client";
 import { logger } from "@utils/logger";
-import { onViewChangeKill, onViewChangeUpdate, onKvsAll, onKvsWrite, onKvsDelete, onCausalGetKey, onCausalUpdateKey, onReplicationConverge, onCausalGetKvs, onCausalUpdateKvs, onShardProxyRequest, onShardProxyResponse } from "@io/handlers.io";
+import { onViewChangeKill, onViewChangeUpdate, onKvsAll, onKvsWrite, onKvsDelete, onCausalGetKey, onCausalUpdateKey, onCausalGetKvs, onCausalUpdateKvs, onShardProxyRequest, onShardProxyResponse, onReplicationConverge } from "@io/handlers.io";
 import viewService from "@/services/view.service";
 import { broadcast, broadcastAck } from "@/io/index.io";
 import { NODE_ENV } from "@/config";
@@ -65,9 +65,9 @@ class IOClient {
     this.socket.on("causal:update-key", onCausalUpdateKey);
     this.socket.on("causal:get-kvs", onCausalGetKvs);
     this.socket.on("causal:update-kvs", onCausalUpdateKvs);
-    this.socket.on("replication:converge", onReplicationConverge);
     this.socket.on("shard:proxy-request", onShardProxyRequest);
     this.socket.on("shard:proxy-response", onShardProxyResponse);
+    this.socket.on("replication:converge", onReplicationConverge);
   }
 
   private onConnect() {

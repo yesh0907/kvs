@@ -6,11 +6,11 @@ import viewModel from "@/models/view.model";
 import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import axios from "axios";
-import clockService from "@/services/clock.service";
 import kvsService from "@/services/kvs.service";
 // FIX LATER
 // import ReplicationService from "@/services/replication.service";
 import { Shard } from "@/interfaces/shard.interface";
+import { makeEventuallyConsistent } from "./replication.service";
 
 class ViewService {
   public viewObject = viewModel;
@@ -48,8 +48,6 @@ class ViewService {
     await this.updateView(incoming); // Update View
 
     const view = (await this.getView()).view;
-    const vc = clockService.getVectorClock();
-    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
 
     if (oldList.length === 0) {
       // Uninitialized
@@ -62,10 +60,8 @@ class ViewService {
         );
         // get IO Server to start listening for connections
         ioServer.listen();
+        makeEventuallyConsistent();
       }
-      // FIX LATER
-      // const replication = new ReplicationService();
-      // replication.begin();
     } else {
       // Already Initialized
       if (sender === "client") {
@@ -133,6 +129,7 @@ class ViewService {
 
   public async replaceView(view: Shard[], sender: string): Promise<void> {
     logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
+    this.num_shards = view.length;
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = view;
       for (let i = 0; i < view.length; i++) {
@@ -142,8 +139,6 @@ class ViewService {
         }
       }
     });
-    const vc = clockService.getVectorClock();
-    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
 
     if (ioServer.isListening()) {
       ioServer.shutdown();
@@ -154,8 +149,11 @@ class ViewService {
       if (ioClient.isConnected()) {
         ioClient.disconnect();
       }
-      // Connect to sender's IO Server
-      ioClient.connect(`http://${sender}`);
+      setTimeout(() => {
+        // Connect to sender's IO Server
+        ioClient.connect(`http://${sender}`);
+        makeEventuallyConsistent();
+      }, 500);
     }
   }
 

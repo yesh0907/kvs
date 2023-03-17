@@ -1,39 +1,14 @@
 import { ADDRESS } from "@/config";
 import { broadcast, IOEventEmitter, IORunning } from "@/io/index.io";
-import { CausalContext, CausalMetadata } from "@/interfaces/causalContext.interface";
-import { KvOperation } from "@/interfaces/kvOperation.interface";
-import causalContexts from "@/models/causalContexts.model";
-import { getLatestCausalContext } from "./causalContext.service";
+import { CausalMetadata } from "@/interfaces/causalContext.interface";
 import { logger } from "@/utils/logger";
 import { ValWithCausalContext } from "@/interfaces/kv.interface";
 import kvsService from "./kvs.service";
-
-type operations = "write" | "delete" | "read" | "readall";
-export const replicateUpdates = (op: operations, key: string, val: string, causalContext: CausalContext) => {
-  if (IORunning()) {
-    const kvOp: KvOperation = {
-      type: op,
-      key,
-      val,
-      causalContext,
-    };
-    broadcast("replicate:updates", { sender: ADDRESS, op: kvOp });
-
-    causalContexts[ADDRESS] = causalContext;
-
-    setTimeout(checkEventualConsistency, 10000);
-  }
-}
-
-export const checkEventualConsistency = () => {
-  const latestCausalContext = getLatestCausalContext(causalContexts);
-  latestCausalContext;
-  // finish later
-}
+import updates from "@/models/update.model";
 
 export const getConsistentVal = async (key: string, receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any; exists: boolean }> => {
   logger.info(`getting causal consistency for key: ${key} with received metadata: ${JSON.stringify(receivedMetadata)}`);
-  const message = { metadata: receivedMetadata, sender: ADDRESS, key};
+  const message = { metadata: receivedMetadata, sender: ADDRESS, key };
   broadcast("causal:get-key", message);
   const res = await new Promise<{ success: boolean; value: ValWithCausalContext; exists: boolean }>(resolve => {
     const timeout = setTimeout(() => {
@@ -49,7 +24,7 @@ export const getConsistentVal = async (key: string, receivedMetadata: CausalMeta
   });
 
   return res;
-}
+};
 
 export const getConsistentKeys = async (inconsistentKeys: string[], receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any }> => {
   logger.info(`getting causal consistency for ${inconsistentKeys} with received metadata: ${JSON.stringify(receivedMetadata)}`);
@@ -74,4 +49,15 @@ export const getConsistentKeys = async (inconsistentKeys: string[], receivedMeta
     });
   });
   return res;
-}
+};
+
+export const makeEventuallyConsistent = () => {
+  setInterval(async () => {
+    if (updates.prevUpdateTime !== updates.last && Date.now() - updates.last >= 10000 && IORunning()) {
+      logger.info(`making updates eventually consistent`);
+      const kvs = await kvsService.getCurrentKvs();
+      broadcast("replication:converge", { kvs });
+      updates.prevUpdateTime = updates.last;
+    }
+  }, 1000);
+};
