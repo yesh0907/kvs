@@ -11,6 +11,7 @@ import kvsService from "@/services/kvs.service";
 // FIX LATER
 // import ReplicationService from "@/services/replication.service";
 import { Shard } from "@/interfaces/shard.interface";
+import { num } from "envalid";
 
 class ViewService {
   public viewObject = viewModel;
@@ -109,6 +110,25 @@ class ViewService {
             if (extra.length > 0) {
               // new replicas added to view
               await this.sendViewChange(extra, view, ioServerIP);
+            }
+
+            let dict = { 0: this.kvsService.kvs };
+            
+            for (let i = 1; i < this.num_shards; i++) {
+              const replicas = await this.getShardReplicas(i);
+              const data = this.viewObject.view.map(replicaAddress => `http://${replicaAddress}/kvs/data` ? !replicas.includes(replicaAddress.toString()) : pass);
+              try {
+                const reqBody = {
+                  view,
+                  sender,
+                };
+                const reqHeaders = { headers: { "Content-Type": "application/json" } };
+                const reqPromises = addresses.map(address => axios.put(address, reqBody, { ...reqHeaders, timeout: 10000 }));
+
+                await Promise.all(reqPromises);
+              } catch (error) {
+                logger.error("viewService:setView - " + error);
+              }
             }
 
             // rehashing
