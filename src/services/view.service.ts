@@ -6,11 +6,11 @@ import viewModel from "@/models/view.model";
 import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import axios from "axios";
-import clockService from "@/services/clock.service";
 import kvsService from "@/services/kvs.service";
 // FIX LATER
 // import ReplicationService from "@/services/replication.service";
 import { Shard } from "@/interfaces/shard.interface";
+import { makeEventuallyConsistent } from "./replication.service";
 
 class ViewService {
   public viewObject = viewModel;
@@ -19,7 +19,7 @@ class ViewService {
 
   constructor() {
     this.viewObject.view = [];
-    this.viewObject.shard_index = -1;
+    this.viewObject.shard_index = 0;
   }
 
   public async getView(): Promise<{ view: Shard[] }> {
@@ -48,8 +48,6 @@ class ViewService {
     await this.updateView(incoming); // Update View
 
     const view = (await this.getView()).view;
-    const vc = clockService.getVectorClock();
-    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
 
     if (oldList.length === 0) {
       // Uninitialized
@@ -62,10 +60,8 @@ class ViewService {
         );
         // get IO Server to start listening for connections
         ioServer.listen();
+        makeEventuallyConsistent();
       }
-      // FIX LATER
-      // const replication = new ReplicationService();
-      // replication.begin();
     } else {
       // Already Initialized
       if (sender === "client") {
@@ -133,7 +129,7 @@ class ViewService {
 
   public async replaceView(view: Shard[], sender: string): Promise<void> {
     logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
-    const prev = (await this.getView()).view;
+    this.num_shards = view.length;
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = view;
       for (let i = 0; i < view.length; i++) {
@@ -143,21 +139,21 @@ class ViewService {
         }
       }
     });
-    const vc = clockService.getVectorClock();
-    view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
+
+    if (ioServer.isListening()) {
+      ioServer.shutdown();
+    }
 
     if (sender !== "broadcast") {
-      if (prev.length === 0) {
-        // connect to sender's IO Server
-        ioClient.connect(`http://${sender}`);
-      } else {
-        // Disconnect from previous IO Server
-        if (ioClient.isConnected()) {
-          ioClient.disconnect();
-        }
+      // Disconnect from previous IO Server
+      if (ioClient.isConnected()) {
+        ioClient.disconnect();
+      }
+      setTimeout(() => {
         // Connect to sender's IO Server
         ioClient.connect(`http://${sender}`);
-      }
+        makeEventuallyConsistent();
+      }, 500);
     }
   }
 
@@ -165,8 +161,13 @@ class ViewService {
     await this.mutex.runExclusive(async () => {
       await kvsService.clearKvs();
       this.viewObject.view = [];
-      this.viewObject.shard_index = -1;
+      this.viewObject.shard_index = 0;
     });
+    if (ioServer.isListening()) {
+      ioServer.shutdown();
+    } else if (ioClient.isConnected()) {
+      ioClient.disconnect();
+    }
   }
 
   public async sendViewChange(replicas: string[], view: Shard[], sender = ADDRESS): Promise<void> {

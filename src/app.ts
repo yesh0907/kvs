@@ -30,6 +30,7 @@ class App {
         origin: ORIGIN,
       },
       transports: ["websocket"],
+      maxHttpBufferSize: 1e9,
     });
     // give IOServer instance access to the socket.io server module
     ioServer.setServer(this.io);

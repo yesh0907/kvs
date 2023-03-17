@@ -1,15 +1,16 @@
 import { type Server, type Socket } from "socket.io";
 import { logger } from "@utils/logger";
 import kvsService from "@/services/kvs.service";
-import clockService from "@/services/clock.service";
 import viewService from "@/services/view.service";
 import { onCausalGetKey, onCausalGetKvs, onCausalUpdateKey, onCausalUpdateKvs, onKvsDelete, onKvsWrite, onReplicationConverge, onShardProxyRequest, onShardProxyResponse, onViewChangeKill, onViewChangeUpdate } from "@io/handlers.io";
 import { NODE_ENV } from "@/config";
+
 // Handles socket.io server-side logic
 class IOServer {
   private server: Server;
   private connections: { [address: string]: Socket };
   private listening: boolean;
+  private existed: boolean;
 
   constructor() {
     this.connections = {};
@@ -37,7 +38,10 @@ class IOServer {
       acc[replica] = null;
       return acc;
     }, {});
-    this.server.on("connection", this.onConnection.bind(this));
+    if (!this.existed) {
+      this.server.on("connection", this.onConnection.bind(this));
+    }
+    this.existed = true;
     logger.info(`=================================`);
     logger.info(`🌐 IO Server handling connections`);
     logger.info(`=================================`);
@@ -45,8 +49,9 @@ class IOServer {
   }
 
   public shutdown() {
-    this.server.close();
+    this.server.disconnectSockets();
     this.listening = false;
+    this.connections = {};
   }
 
   private async onConnection(socket: Socket) {
@@ -69,9 +74,9 @@ class IOServer {
     socket.on("causal:update-key", onCausalUpdateKey);
     socket.on("causal:get-kvs", onCausalGetKvs);
     socket.on("causal:update-kvs", onCausalUpdateKvs);
-    socket.on("replication:converge", onReplicationConverge);
     socket.on("shard:proxy-request", onShardProxyRequest);
     socket.on("shard:proxy-response", onShardProxyResponse);
+    socket.on("replication:converge", onReplicationConverge);
   }
 
   private async addConnection(socket: Socket) {
@@ -86,9 +91,8 @@ class IOServer {
   }
 
   private async sendKvsToReplica(replica: string) {
-    const kvs = Array.from(await kvsService.getCurrentKvs());
-    const clock = Array.from(await clockService.getVectorClock().getClock());
-    this.sendTo(replica, "kvs:all", { clock, kvs });
+    const kvs = await kvsService.getCurrentKvs();
+    this.sendTo(replica, "kvs:all", { kvs });
   }
 
   private relayBroadcast(socket: Socket, data) {

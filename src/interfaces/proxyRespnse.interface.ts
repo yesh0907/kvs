@@ -1,7 +1,9 @@
+import { CausalMetadata } from "./causalContext.interface";
+
 export interface ProxyResponse {
   id: number;
   status: number;
-  metadata: [string, number][];
+  metadata?: CausalMetadata;
   key?: string;
   val?: string;
   exists?: boolean;
