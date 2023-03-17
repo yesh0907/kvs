@@ -2,7 +2,7 @@
 # ex) production-stage: make build APP_NAME=<APP_NAME>
 # ex) development-stage: make build-dev APP_NAME=<APP_NAME>
 
-APP_NAME = kvs:3.0
+APP_NAME = kvs:4.0
 
 .PHONY: build
 # Make Docker Network

@@ -63,11 +63,14 @@ class KvsController {
       if (view.view.length === 0) {
         throw new HttpException(418, "uninitialized");
       }
+      if (!viewService.oldShardKeysRemoved) {
+        await kvsService.removeKeysNotInShard()
+      }
       const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
       logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
       const { success, keys, count, metadata } = await this.kvsService.retreiveAllKeys(receivedMetadata);
       if (success) {
-        res.status(200).json({ keys, count, "causal-metadata": metadata });
+        res.status(200).json({ keys, count, "causal-metadata": metadata, shard_id: (await viewService.getShardIndex()) });
       } else {
         throw new HttpException(500, "timed out while waiting for depended updates");
       }
@@ -85,7 +88,9 @@ class KvsController {
       if (view.view.length === 0) {
         throw new HttpException(418, "uninitialized");
       }
-
+      if (!viewService.oldShardKeysRemoved) {
+        await kvsService.removeKeysNotInShard()
+      }
       const receivedMetadata:CausalMetadata = req.body[CAUSAL_METADATA_KEY] || {};
       logger.info(`received metadata: ${JSON.stringify(receivedMetadata)}`);
       const key = req.params.key as string;
@@ -173,6 +178,17 @@ class KvsController {
       next(error);
     }
   };
+
+  // used only for resharding - data is causally and eventually consistent
+  public getManyKvs = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const { keys }: { keys: string[] } = req.body;
+      const kvs = await this.kvsService.readManyKvs(keys);
+      res.status(200).json({ kvs });
+    } catch (error) {
+      next(error);
+    }
+  }
 }
 
 export default KvsController;

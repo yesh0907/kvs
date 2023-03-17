@@ -7,17 +7,20 @@ import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import axios from "axios";
 import kvsService from "@/services/kvs.service";
-import { Shard } from "@/interfaces/shard.interface";
+import { KeyDistribution, Shard, ShardIdKeyPairing } from "@/interfaces/shard.interface";
 import { makeEventuallyConsistent } from "./replication.service";
+import { KvStore } from "@/interfaces/kv.interface";
 
 class ViewService {
   public viewObject = viewModel;
   public mutex = new Mutex();
   public num_shards = 1;
+  public oldShardKeysRemoved: boolean;
 
   constructor() {
     this.viewObject.view = [];
     this.viewObject.shard_index = 0;
+    this.oldShardKeysRemoved = true;
   }
 
   public async getView(): Promise<{ view: Shard[] }> {
@@ -30,6 +33,7 @@ class ViewService {
 
   public async setView(incomingBody: { num_shards: number; nodes: string[] }, sender = "client"): Promise<void> {
     let oldList = [];
+    let oldView: Shard[] = [];
     const prev_num_shards = this.num_shards;
     this.num_shards = incomingBody.num_shards;
     await this.mutex.runExclusive(async () => {
@@ -40,7 +44,15 @@ class ViewService {
           oldList.push(addr);
         });
       });
+      oldView = this.viewObject.view;
     });
+
+    // resharding - get all keys from all shards
+    let allKeys:ShardIdKeyPairing = {};
+    if (this.num_shards !== prev_num_shards) {
+      allKeys = await this.getAllKeysFromShards(oldView);
+      this.oldShardKeysRemoved = false;
+    }
 
     const incoming = incomingBody.nodes;
     await this.updateView(incoming); // Update View
@@ -55,6 +67,7 @@ class ViewService {
         await this.sendViewChange(
           incoming.filter(replica => replica !== ADDRESS),
           view,
+          {}
         );
         // get IO Server to start listening for connections
         ioServer.listen();
@@ -71,6 +84,11 @@ class ViewService {
 
         // view has changed
         if (!sameMembers(oldList, incoming) || prev_num_shards !== this.num_shards) {
+          // resharding - update shard KVS with new keys
+          const distribution = this.getKeyDistribution(allKeys);
+          logger.info(`key distribution = ${JSON.stringify(distribution)}`);
+          await this.updateShardKvs(distribution, oldView);
+
           let ioServerKilled = false;
           const ioServerIP = ioClient.getIP();
           // figure out if replica running IO server has been killed or not
@@ -96,14 +114,15 @@ class ViewService {
             await this.sendViewChange(
               incoming.filter(replica => replica !== ADDRESS),
               view,
+              distribution,
             );
           } else {
             if (extra.length > 0) {
               // new replicas added to view
-              await this.sendViewChange(extra, view, ioServerIP);
+              await this.sendViewChange(extra, view, distribution, ioServerIP);
             }
             // update existing replica views
-            broadcast("viewchange:update", { sender: ADDRESS, view: Array.from(view) });
+            broadcast("viewchange:update", { sender: ADDRESS, view: Array.from(view), keyDistribution: distribution });
           }
         }
       }
@@ -119,14 +138,17 @@ class ViewService {
 
       for (let i = 0; i < incoming.length; i++) {
         const k = i % this.num_shards;
-        this.viewObject.shard_index = k;
+        if (incoming[i] === ADDRESS) {
+          this.viewObject.shard_index = k;
+        }
         this.viewObject.view[k].nodes.push(incoming[i]);
       }
     });
   }
 
-  public async replaceView(view: Shard[], sender: string): Promise<void> {
+  public async replaceView(view: Shard[], sender: string, distribution: KeyDistribution): Promise<void> {
     logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
+    const oldView = (await this.getView()).view;
     this.num_shards = view.length;
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = view;
@@ -138,11 +160,17 @@ class ViewService {
       }
     });
 
-    if (ioServer.isListening()) {
-      ioServer.shutdown();
+    // resharding
+    if (Object.keys(distribution).length > 0) {
+      this.oldShardKeysRemoved = false;
+      await this.updateShardKvs(distribution, oldView);
     }
 
     if (sender !== "broadcast") {
+      // If replica was hosting IO Server in prev view, kill it
+      if (ioServer.isListening()) {
+        ioServer.shutdown();
+      }
       // Disconnect from previous IO Server
       if (ioClient.isConnected()) {
         ioClient.disconnect();
@@ -168,11 +196,12 @@ class ViewService {
     }
   }
 
-  public async sendViewChange(replicas: string[], view: Shard[], sender = ADDRESS): Promise<void> {
+  public async sendViewChange(replicas: string[], view: Shard[], keyDistribution: KeyDistribution, sender = ADDRESS): Promise<void> {
     const addresses = replicas.map(replicaAddress => `http://${replicaAddress}/kvs/admin/view/shards`);
     try {
       const reqBody = {
         view,
+        keyDistribution,
         sender,
       };
       const reqHeaders = { headers: { "Content-Type": "application/json" } };
@@ -181,6 +210,82 @@ class ViewService {
       await Promise.all(reqPromises);
     } catch (error) {
       logger.error("viewService:sendViewChange - " + error);
+    }
+  }
+
+  public async getAllKeysFromShards(view: Shard[]): Promise<ShardIdKeyPairing> {
+    const shardIndex = this.viewObject.shard_index;
+    const keys:ShardIdKeyPairing = {
+      [shardIndex]: (await kvsService.getAllKeys()).keys,
+    };
+    for (const shard of view) {
+      if (shard.shard_id !== shardIndex) {
+        for (const node of shard.nodes) {
+          const address = `http://${node}/kvs/data/`;
+          try {
+            const response = await axios.get(address, { timeout: 2000 });
+            if (response.status === 200) {
+              keys[shard.shard_id] = response.data.keys;
+              break;
+            }
+          } catch (error) {
+            logger.error("viewService:getAllKeysFromShards - " + error);
+          }
+        }
+      }
+    }
+    return keys;
+  }
+
+  public getKeyDistribution(allKeys:ShardIdKeyPairing):KeyDistribution {
+    const distribution:KeyDistribution = {};
+    for (const shardId in allKeys) {
+      const oldShardID = parseInt(shardId, 10);
+      for (const key of allKeys[shardId]) {
+        const newShardID = kvsService.lookUp(this.num_shards, key);
+        if (distribution[newShardID] === undefined) {
+          distribution[newShardID] = {};
+        }
+        if (distribution[newShardID][oldShardID] === undefined) {
+          distribution[newShardID][oldShardID] = [key];
+        } else {
+          distribution[newShardID][oldShardID].push(key);
+        }
+      }
+    }
+    return distribution;
+  }
+
+  public async updateShardKvs(distribution:KeyDistribution, oldView: Shard[]):Promise<void> {
+    const newShardIndex = await this.getShardIndex();
+    const oldShardIndex = oldView.findIndex(shard => shard.nodes.includes(ADDRESS));
+    const keysInShard = distribution[newShardIndex];
+
+    for (const oldShardID in keysInShard) {
+      if (parseInt(oldShardID, 10) !== oldShardIndex) {
+        const keys = keysInShard[oldShardID];
+        const oldShard = oldView[oldShardID];
+        for (const node of oldShard.nodes) {
+          const address = `http://${node}/kvs/resharding/data/`;
+          try {
+            const reqBody = {
+              keys
+            };
+            const reqHeaders = { headers: { "Content-Type": "application/json" } };
+            const response = await axios.put(address, reqBody, { ...reqHeaders, timeout: 2000 });
+            if (response.status === 200) {
+              const { kvs }:{ kvs: KvStore} = response.data;
+              for (const key in kvs) {
+                const v = kvs[key];
+                await kvsService.createOrUpdateKv({ key, val: v.val }, v.causalContext.causalMetadata, v);
+              }
+              break;
+            }
+          } catch (error) {
+            logger.error("viewService:getUpdateShardKvs - " + error);
+          }
+        }
+      }
     }
   }
 
@@ -213,6 +318,7 @@ class ViewService {
     await this.sendViewChange(
       viewReplicas.filter(replica => replica !== ADDRESS),
       view,
+      {}
     );
   }
 
@@ -225,7 +331,7 @@ class ViewService {
   }
 
   public async getShardIndex(): Promise<number> {
-    let ret = -1;
+    let ret = 0;
     await this.mutex.runExclusive(async () => {
       ret = this.viewObject.shard_index;
     });

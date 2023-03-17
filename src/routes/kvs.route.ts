@@ -18,6 +18,7 @@ class KvsRoute implements Routes {
     this.router.get(`${this.path}/:key?`, this.kvsController.getKvByKey);
     this.router.delete(`${this.path}/:key?`, this.kvsController.deleteKvByKey);
     this.router.put(`${this.path}/:key?`, validationMiddleware(UpdateKVDto, "body"), this.kvsController.createOrUpdate);
+    this.router.put(`/kvs/resharding/data`, this.kvsController.getManyKvs);
   }
 }
 

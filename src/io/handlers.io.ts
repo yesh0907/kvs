@@ -6,7 +6,7 @@ import ioClient from "@/io/client/index.client";
 import ioServer from "@/io/server/index.server";
 import { broadcast, IOEventEmitter, sendTo } from "@/io/index.io";
 import { maxIP } from "@/utils/util";
-import { Shard } from "@/interfaces/shard.interface";
+import { KeyDistribution, Shard } from "@/interfaces/shard.interface";
 import { KvOperation } from "@/interfaces/kvOperation.interface";
 import { KV, KvStore, ValWithCausalContext } from "@/interfaces/kv.interface";
 import { ProxyResponse } from "@/interfaces/proxyRespnse.interface";
@@ -25,158 +25,174 @@ export const onViewChangeKill = async data => {
 };
 
 export const onViewChangeUpdate = async data => {
-  const { view, sender }: { view: Shard[]; sender: string } = data;
+  const { view, sender, keyDistribution }: { view: Shard[]; sender: string; keyDistribution: KeyDistribution } = data;
   if (sender !== ADDRESS) {
     // apply view change from another replica
     const replicas = view.map(shard => shard.nodes).flat();
     if (replicas.includes(ADDRESS)) {
       logger.info(`received view change: ${JSON.stringify(view)} from ${sender}`);
-      await viewService.replaceView(view, "broadcast");
+    await viewService.replaceView(view, "broadcast", keyDistribution);
     }
   }
 };
 
 export const onKvsAll = async data => {
-  const { kvs }: { kvs: KvStore } = data;
-  await kvsService.updateKvs(kvs);
+  const { kvs, shard_id }: { kvs: KvStore, shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    await kvsService.updateKvs(kvs);
+  }
 };
 
 export const onKvsWrite = async data => {
-  const { key, val, sender }: { key: string; val: ValWithCausalContext; sender: string } = data;
-  const receivedMetadata = val.causalContext.causalMetadata;
-  const kvData = { key, val: val.val };
-  logger.info(`received write for ${key}=${val.val} from ${sender}`);
+  const { key, val, sender, shard_id }: { key: string; val: ValWithCausalContext; sender: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    const receivedMetadata = val.causalContext.causalMetadata;
+    const kvData = { key, val: val.val };
+    logger.info(`received write for ${key}=${val.val} from ${sender}`);
 
-  const localVal = await kvsService.getKv(key);
-  if (localVal !== undefined && localVal.causalContext.timestamp === val.causalContext.timestamp) {
-    // concurrent b/c they have the same timestamp
-    logger.info(`concurrent and conflicting operations from ${sender}`);
-    if (maxIP(sender, ADDRESS) === sender) {
-      await kvsService.createOrUpdateKv(kvData, receivedMetadata, val);
+    const localVal = await kvsService.getKv(key);
+    if (localVal !== undefined && localVal.causalContext.timestamp === val.causalContext.timestamp) {
+      // concurrent b/c they have the same timestamp
+      logger.info(`concurrent and conflicting operations from ${sender}`);
+      if (maxIP(sender, ADDRESS) === sender) {
+        await kvsService.createOrUpdateKv(kvData, receivedMetadata, val);
+      } else {
+        logger.info(`telling sender to use ${key}=${localVal.val}`);
+        // add shard id
+        broadcast("kvs:write", { key, val: localVal, sender: ADDRESS });
+      }
     } else {
-      logger.info(`telling sender to use ${key}=${localVal.val}`);
-      // add shard id
-      broadcast("kvs:write", { key, val: localVal, sender: ADDRESS });
+      await kvsService.createOrUpdateKv(kvData, receivedMetadata, val);
+      logger.info(`write ${key}=${val.val} to kvs`);
     }
-  } else {
-    await kvsService.createOrUpdateKv(kvData, receivedMetadata, val);
-    logger.info(`write ${key}=${val.val} to kvs`);
   }
 };
 
 export const onKvsDelete = async data => {
-  const { key, causalContext, sender }: { key: string; causalContext: CausalContext; sender: string } = data;
-  const receivedMetadata: CausalMetadata = causalContext.causalMetadata;
-  logger.info(`received delete for ${key} from ${sender}`);
+  const { key, causalContext, sender, shard_id }: { key: string; causalContext: CausalContext; sender: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    const receivedMetadata: CausalMetadata = causalContext.causalMetadata;
+    logger.info(`received delete for ${key} from ${sender}`);
 
-  const localVal = await kvsService.getKv(key);
-  if (localVal !== undefined && localVal.causalContext.timestamp === causalContext.timestamp) {
-    // concurrent b/c they have the same timestamp
-    logger.info(`concurrent and conflicting operations from ${sender}`);
-    if (maxIP(sender, ADDRESS) === sender) {
-      logger.info(`deleted ${key} from kvs`);
-      await kvsService.deleteKv(key, receivedMetadata);
+    const localVal = await kvsService.getKv(key);
+    if (localVal !== undefined && localVal.causalContext.timestamp === causalContext.timestamp) {
+      // concurrent b/c they have the same timestamp
+      logger.info(`concurrent and conflicting operations from ${sender}`);
+      if (maxIP(sender, ADDRESS) === sender) {
+        logger.info(`deleted ${key} from kvs`);
+        await kvsService.deleteKv(key, receivedMetadata);
+      } else {
+        // use write b/c delete won't remove the key, will just make it undefined
+        logger.info(`not deleting ${key} - telling sender to use ${key}=${localVal.val}`);
+        // add shard id
+        broadcast("kvs:write", { key, val: localVal, sender: ADDRESS });
+      }
     } else {
-      // use write b/c delete won't remove the key, will just make it undefined
-      logger.info(`not deleting ${key} - telling sender to use ${key}=${localVal.val}`);
-      // add shard id
-      broadcast("kvs:write", { key, val: localVal, sender: ADDRESS });
+      await kvsService.deleteKv(key, receivedMetadata);
+      logger.info(`deleted ${key} from kvs`);
     }
-  } else {
-    await kvsService.deleteKv(key, receivedMetadata);
-    logger.info(`deleted ${key} from kvs`);
   }
 };
 
 export const onCausalGetKey = async data => {
-  const { metadata, key, sender }: { metadata: CausalMetadata; key: string; sender: string } = data;
-  if (Object.keys(metadata).length === 0) {
-    const broadcastData = { exists: false, key, val: undefined, requester: sender };
-    broadcast("causal:update-key", broadcastData);
-  } else {
-    const kv = await kvsService.getKv(key);
-    if (kv !== undefined) {
-      const { causalContext } = kv;
-      if (causalContext.timestamp >= metadata[key]) {
-        const broadcastData = { exists: kv.val !== undefined, key, val: kv, requester: sender };
-        broadcast("causal:update-key", broadcastData);
+  const { metadata, key, sender, shard_id }: { metadata: CausalMetadata; key: string; sender: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    if (Object.keys(metadata).length === 0) {
+      const broadcastData = { exists: false, key, val: undefined, requester: sender, shard_id };
+      broadcast("causal:update-key", broadcastData);
+    } else {
+      const kv = await kvsService.getKv(key);
+      if (kv !== undefined) {
+        const { causalContext } = kv;
+        if (causalContext.timestamp >= metadata[key]) {
+          const broadcastData = { exists: kv.val !== undefined, key, val: kv, requester: sender, shard_id };
+          broadcast("causal:update-key", broadcastData);
+        }
       }
     }
   }
 };
 
 export const onCausalUpdateKey = async data => {
-  const { key, val, exists, requester }: { key: string; val: ValWithCausalContext; exists: boolean; requester: string } = data;
-  if (val !== undefined) {
-    const kv = await kvsService.getKv(key);
-    if (kv === undefined || kv.causalContext.timestamp < val.causalContext.timestamp) {
-      const { causalMetadata } = val.causalContext;
-      if (exists) {
-        await kvsService.createOrUpdateKv({ key, val: val.val }, causalMetadata, val);
-      } else {
-        await kvsService.deleteKv(key, causalMetadata, val);
+  const { key, val, exists, requester, shard_id }: { key: string; val: ValWithCausalContext; exists: boolean; requester: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    if (val !== undefined) {
+      const kv = await kvsService.getKv(key);
+      if (kv === undefined || kv.causalContext.timestamp < val.causalContext.timestamp) {
+        const { causalMetadata } = val.causalContext;
+        if (exists) {
+          await kvsService.createOrUpdateKv({ key, val: val.val }, causalMetadata, val);
+        } else {
+          await kvsService.deleteKv(key, causalMetadata, val);
+        }
       }
     }
-  }
-  if (requester === ADDRESS) {
-    IOEventEmitter.emit(`causal:${key}-consistent`, { key, value: val, exists });
+    if (requester === ADDRESS) {
+      IOEventEmitter.emit(`causal:${key}-consistent`, { key, value: val, exists });
+    }
   }
 };
 
 export const onCausalGetKvs = async data => {
-  const { metadata, keys, sender }: { metadata: CausalMetadata; keys: string[]; sender: string } = data;
-  if (Object.keys(metadata).length === 0) {
-    const kvs = await kvsService.getCurrentKvs();
-    const broadcastData = { kvs, requester: sender };
-    broadcast("causal:update-kvs", broadcastData);
-  } else {
-    const consistentVals: KvStore = {};
-    for (const key of keys) {
-      if (metadata[key] !== undefined) {
-        const kv = await kvsService.getKv(key);
-        if (kv !== undefined && kv.causalContext.timestamp >= metadata[key]) {
-          consistentVals[key] = kv;
+  const { metadata, keys, sender, shard_id }: { metadata: CausalMetadata; keys: string[]; sender: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    if (Object.keys(metadata).length === 0) {
+      const kvs = await kvsService.getCurrentKvs();
+      const broadcastData = { kvs, requester: sender, shard_id };
+      broadcast("causal:update-kvs", broadcastData);
+    } else {
+      const consistentVals: KvStore = {};
+      for (const key of keys) {
+        if (metadata[key] !== undefined) {
+          const kv = await kvsService.getKv(key);
+          if (kv !== undefined && kv.causalContext.timestamp >= metadata[key]) {
+            consistentVals[key] = kv;
+          }
         }
       }
-    }
-    if (Object.keys(consistentVals).length > 0) {
-      const broadcastData = { kvs: consistentVals, requester: sender };
-      broadcast("causal:update-kvs", broadcastData);
+      if (Object.keys(consistentVals).length > 0) {
+        const broadcastData = { kvs: consistentVals, requester: sender, shard_id };
+        broadcast("causal:update-kvs", broadcastData);
+      }
     }
   }
 };
 
 export const onCausalUpdateKvs = async data => {
-  const { kvs, requester }: { kvs: KvStore; requester: string } = data;
-  if (Object.keys(kvs).length > 0) {
-    for (const key of Object.keys(kvs)) {
-      const kv = await kvsService.getKv(key);
-      if (kv === undefined || kv.causalContext.timestamp < kvs[key].causalContext.timestamp) {
-        const { causalMetadata } = kvs[key].causalContext;
-        if (kvs[key].val !== undefined) {
-          await kvsService.createOrUpdateKv({ key, val: kvs[key].val }, causalMetadata, kvs[key]);
-        } else {
-          await kvsService.deleteKv(key, causalMetadata, kvs[key]);
+  const { kvs, requester, shard_id }: { kvs: KvStore; requester: string; shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    if (Object.keys(kvs).length > 0) {
+      for (const key of Object.keys(kvs)) {
+        const kv = await kvsService.getKv(key);
+        if (kv === undefined || kv.causalContext.timestamp < kvs[key].causalContext.timestamp) {
+          const { causalMetadata } = kvs[key].causalContext;
+          if (kvs[key].val !== undefined) {
+            await kvsService.createOrUpdateKv({ key, val: kvs[key].val }, causalMetadata, kvs[key]);
+          } else {
+            await kvsService.deleteKv(key, causalMetadata, kvs[key]);
+          }
         }
       }
     }
-  }
-  if (requester === ADDRESS) {
-    IOEventEmitter.emit(`causal:kvs-consistent`, { keys: Object.keys(kvs) });
+    if (requester === ADDRESS) {
+      IOEventEmitter.emit(`causal:kvs-consistent`, { keys: Object.keys(kvs) });
+    }
   }
 };
 
 export const onReplicationConverge = async data => {
-  const { kvs }: { kvs: KvStore } = data;
-  if (Object.keys(kvs).length > 0) {
-    for (const key of Object.keys(kvs)) {
-      const kv = await kvsService.getKv(key);
-      if (kv === undefined || kv.causalContext.timestamp < kvs[key].causalContext.timestamp) {
-        const { causalMetadata } = kvs[key].causalContext;
-        if (kvs[key].val !== undefined) {
-          await kvsService.createOrUpdateKv({ key, val: kvs[key].val }, causalMetadata, kvs[key]);
-        } else {
-          await kvsService.deleteKv(key, causalMetadata, kvs[key]);
+  const { kvs, shard_id }: { kvs: KvStore, shard_id: number } = data;
+  if (shard_id === (await viewService.getShardIndex())) {
+    if (Object.keys(kvs).length > 0) {
+      for (const key of Object.keys(kvs)) {
+        const kv = await kvsService.getKv(key);
+        if (kv === undefined || kv.causalContext.timestamp < kvs[key].causalContext.timestamp) {
+          const { causalMetadata } = kvs[key].causalContext;
+          if (kvs[key].val !== undefined) {
+            await kvsService.createOrUpdateKv({ key, val: kvs[key].val }, causalMetadata, kvs[key]);
+          } else {
+            await kvsService.deleteKv(key, causalMetadata, kvs[key]);
+          }
         }
       }
     }

@@ -92,7 +92,7 @@ class IOServer {
 
   private async sendKvsToReplica(replica: string) {
     const kvs = await kvsService.getCurrentKvs();
-    this.sendTo(replica, "kvs:all", { kvs });
+    this.sendTo(replica, "kvs:all", { kvs, shard_id: viewService.getShardIndex() });
   }
 
   private relayBroadcast(socket: Socket, data) {

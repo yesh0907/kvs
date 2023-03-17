@@ -44,8 +44,8 @@ class ViewController {
   // receives the setViewChange broadcast from a replica
   public setShards = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const { sender, view } = req.body;
-      await this.viewService.replaceView(view, sender);
+      const { sender, view, keyDistribution } = req.body;
+      await this.viewService.replaceView(view, sender, keyDistribution);
       res.status(200).json();
     } catch (error) {
       next(error);

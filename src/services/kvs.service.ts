@@ -8,6 +8,7 @@ import updates from "@/models/update.model";
 import { logger } from "@/utils/logger";
 import { Mutex } from "async-mutex";
 import { getConsistentKeys, getConsistentVal } from "./replication.service";
+import viewService from "./view.service";
 
 class KvsService {
   public kvs = kvsModel;
@@ -61,6 +62,15 @@ class KvsService {
     }
   }
 
+  public async readManyKvs(keys: string[]): Promise<KvStore> {
+    const kvs: KvStore = {};
+    for (const key of keys) {
+      const kv = await this.getKv(key);
+      kvs[key] = kv;
+    }
+    return kvs;
+  }
+
   public async removeKv(
     shard_id: number,
     key: string,
@@ -84,7 +94,7 @@ class KvsService {
   public async retreiveAllKeys(
     receivedMetadata: CausalMetadata,
   ): Promise<{ success: boolean; count?: number; keys?: string[]; metadata?: CausalMetadata }> {
-    const inconsistentKeys:string[] = [];
+    const inconsistentKeys: string[] = [];
     for (const key in receivedMetadata) {
       if (this.kvs[key] === undefined || this.kvs[key].causalContext.timestamp < receivedMetadata[key]) {
         logger.info(`inconsistent for key ${key} - local: ${this.kvs[key]?.causalContext.timestamp} - received: ${receivedMetadata[key]}`);
@@ -110,7 +120,11 @@ class KvsService {
     }
   }
 
-  public async createOrUpdateKv(kvData: KV, causalMetadata: CausalMetadata, valWithContext?: ValWithCausalContext): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
+  public async createOrUpdateKv(
+    kvData: KV,
+    causalMetadata: CausalMetadata,
+    valWithContext?: ValWithCausalContext,
+  ): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
     let val: ValWithCausalContext = {
@@ -119,7 +133,7 @@ class KvsService {
         timestamp,
         causalMetadata,
       },
-    }
+    };
     if (valWithContext !== undefined) {
       val = valWithContext;
     }
@@ -151,7 +165,11 @@ class KvsService {
     return value;
   }
 
-  public async deleteKv(key: string, causalMetadata: CausalMetadata, valWithContext?: ValWithCausalContext): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
+  public async deleteKv(
+    key: string,
+    causalMetadata: CausalMetadata,
+    valWithContext?: ValWithCausalContext,
+  ): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
     let val: ValWithCausalContext = {
@@ -160,7 +178,7 @@ class KvsService {
         timestamp,
         causalMetadata,
       },
-    }
+    };
     if (valWithContext !== undefined) {
       val = valWithContext;
     }
@@ -250,6 +268,17 @@ class KvsService {
     });
 
     return res;
+  }
+
+  public async removeKeysNotInShard(): Promise<void> {
+    const shardIndex = await viewService.getShardIndex();
+    const numShards = viewService.num_shards;
+    for (const key in this.kvs) {
+      if (this.lookUp(numShards, key) !== shardIndex) {
+        delete this.kvs[key];
+      }
+    }
+    viewService.oldShardKeysRemoved = true;
   }
 }
 

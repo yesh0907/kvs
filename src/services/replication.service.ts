@@ -5,10 +5,11 @@ import { logger } from "@/utils/logger";
 import { ValWithCausalContext } from "@/interfaces/kv.interface";
 import kvsService from "./kvs.service";
 import updates from "@/models/update.model";
+import viewService from "./view.service";
 
 export const getConsistentVal = async (key: string, receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any; exists: boolean }> => {
   logger.info(`getting causal consistency for key: ${key} with received metadata: ${JSON.stringify(receivedMetadata)}`);
-  const message = { metadata: receivedMetadata, sender: ADDRESS, key };
+  const message = { metadata: receivedMetadata, sender: ADDRESS, key, shard_id: (await viewService.getShardIndex()) };
   broadcast("causal:get-key", message);
   const res = await new Promise<{ success: boolean; value: ValWithCausalContext; exists: boolean }>(resolve => {
     const timeout = setTimeout(() => {
@@ -28,7 +29,7 @@ export const getConsistentVal = async (key: string, receivedMetadata: CausalMeta
 
 export const getConsistentKeys = async (inconsistentKeys: string[], receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any }> => {
   logger.info(`getting causal consistency for ${inconsistentKeys} with received metadata: ${JSON.stringify(receivedMetadata)}`);
-  const message = { metadata: receivedMetadata, keys: inconsistentKeys, sender: ADDRESS };
+  const message = { metadata: receivedMetadata, keys: inconsistentKeys, sender: ADDRESS, shard_id: (await viewService.getShardIndex()) };
   broadcast("causal:get-kvs", message);
   const receivedKeys = new Set<string>();
   const res = await new Promise<{ success: boolean; value: any }>(resolve => {
@@ -56,7 +57,7 @@ export const makeEventuallyConsistent = () => {
     if (updates.prevUpdateTime !== updates.last && Date.now() - updates.last >= 10000 && IORunning()) {
       logger.info(`making updates eventually consistent`);
       const kvs = await kvsService.getCurrentKvs();
-      broadcast("replication:converge", { kvs });
+      broadcast("replication:converge", { kvs, shard_id: (await viewService.getShardIndex()) });
       updates.prevUpdateTime = updates.last;
     }
   }, 1000);
