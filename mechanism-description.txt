@@ -14,3 +14,10 @@ A replica can detect if other replicas are down when a view change is adminstere
 to respond to the view change PUT request. If it does not respond within 10 seconds, then that replica is considered down.
 Every 10 seconds, when the replicas converge, a request will be sent to the replicas that are down to see if they are up and
 get them to be consistent.
+
+Sharding happens mostly on the view layer of the server where addresses in the view are distributed into the 
+given number of shards and synchronized. Existing data in any node must be run through the lookUp function 
+after a view change where it is hashed and finds a new shard where all the replicas are updated. This process
+is known as resharding and for our simple model we don't bother trying to minimize data movement. Replicas in the 
+same view should all have the same data and when one is updated they all update. This horizontal scaling helps 
+distribute data across multiple nodes and hopefully increases speed and space.
