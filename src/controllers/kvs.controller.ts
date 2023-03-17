@@ -40,14 +40,14 @@ class KvsController {
         };
         const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
         if (proxyRes.status !== 503) {
-          res.status(proxyRes.status).json({ "causal-metadata": proxyRes.metadata });
+          res.status(200).json({ "causal-metadata": proxyRes.metadata });
         } else {
           res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
         }
       } else {
         const { prev, metadata } = await this.kvsService.writeKv(shardIndex, kvData, receivedMetadata);
         if (prev === undefined) {
-          res.status(201).json({ "causal-metadata": metadata });
+          res.status(200).json({ "causal-metadata": metadata });
         } else {
           res.status(200).json({ "causal-metadata": metadata });
         }
@@ -157,14 +157,14 @@ class KvsController {
         };
         const proxyRes = await this.kvsService.proxyRequest(shard_id, op);
         if (proxyRes.status !== 503) {
-          res.status(proxyRes.status).json({ "causal-metadata": proxyRes.metadata });
+          res.status(200).json({ "causal-metadata": proxyRes.metadata });
         } else {
           res.status(503).json({ error: "upstream down", upstream: { shard_id, nodes: viewService.getShardReplicas(shard_id) } });
         }
       } else {
         const { prev, metadata } = await this.kvsService.removeKv(shardIndex, key, receivedMetadata);
         if (prev === undefined) {
-          res.status(404).json({ "causal-metadata": metadata });
+          res.status(200).json({ "causal-metadata": metadata });
         } else {
           res.status(200).json({ "causal-metadata": metadata });
         }

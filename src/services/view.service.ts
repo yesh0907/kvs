@@ -133,7 +133,6 @@ class ViewService {
 
   public async replaceView(view: Shard[], sender: string): Promise<void> {
     logger.info(`replaceView: ${JSON.stringify(Array.from(view))}`);
-    const prev = (await this.getView()).view;
     await this.mutex.runExclusive(async () => {
       this.viewObject.view = view;
       for (let i = 0; i < view.length; i++) {
@@ -146,18 +145,17 @@ class ViewService {
     const vc = clockService.getVectorClock();
     view[this.viewObject.shard_index].nodes.forEach(replica => vc.addClock(replica));
 
+    if (ioServer.isListening()) {
+      ioServer.shutdown();
+    }
+
     if (sender !== "broadcast") {
-      if (prev.length === 0) {
-        // connect to sender's IO Server
-        ioClient.connect(`http://${sender}`);
-      } else {
-        // Disconnect from previous IO Server
-        if (ioClient.isConnected()) {
-          ioClient.disconnect();
-        }
-        // Connect to sender's IO Server
-        ioClient.connect(`http://${sender}`);
+      // Disconnect from previous IO Server
+      if (ioClient.isConnected()) {
+        ioClient.disconnect();
       }
+      // Connect to sender's IO Server
+      ioClient.connect(`http://${sender}`);
     }
   }
 
@@ -167,6 +165,11 @@ class ViewService {
       this.viewObject.view = [];
       this.viewObject.shard_index = 0;
     });
+    if (ioServer.isListening()) {
+      ioServer.shutdown();
+    } else if (ioClient.isConnected()) {
+      ioClient.disconnect();
+    }
   }
 
   public async sendViewChange(replicas: string[], view: Shard[], sender = ADDRESS): Promise<void> {

@@ -4,6 +4,7 @@ import { onViewChangeKill, onViewChangeUpdate, onKvsAll, onKvsWrite, onKvsDelete
 import viewService from "@/services/view.service";
 import { broadcast, broadcastAck } from "@/io/index.io";
 import { NODE_ENV } from "@/config";
+import ioServer from "../server/index.server";
 
 // Handles socket.io client-side logic
 class IOClient {
@@ -32,6 +33,9 @@ class IOClient {
   public connect(address: string) {
     if (NODE_ENV === "test") {
       return;
+    }
+    if (ioServer.isListening()) {
+      ioServer.shutdown();
     }
     this.address = address;
     this.socket = ioc(this.address, {
@@ -77,14 +81,23 @@ class IOClient {
   }
 
   public broadcast(event: string, data: any) {
+    let count = 0;
     logger.info(`broadcasting ${event} with data: ${JSON.stringify(data)}`);
-    this.socket.timeout(10000).emit("broadcast-ping", async err => {
+    const relay = () => this.socket.timeout(2000).emit("broadcast-ping", async err => {
       if (err) {
-        logger.info("IO server is down. Making view change");
-        await viewService.changeIOServer();
-        // rebroadcast change
-        logger.info("Rebroadcasting change");
-        broadcast(event, data);
+        count++;
+        if (count >= 5) {
+          if (!ioServer.isListening()) {
+            logger.info("IO server is down. Making view change");
+            await viewService.changeIOServer();
+          }
+          // rebroadcast change
+          logger.info("Rebroadcasting change");
+          broadcast(event, data);
+        } else {
+          logger.info(`retry count: ${count}...`);
+          relay();
+        }
       }
       else {
         logger.info(`relaying to server to broadcast ${event} with data: ${JSON.stringify(data)}`);
@@ -94,6 +107,7 @@ class IOClient {
         this.socket.emit(event, data);
       }
     });
+    relay();
   }
 
   public broadcastAck(event: string, data: any) {

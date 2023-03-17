@@ -18,12 +18,13 @@ class KvsService {
     kvData: KV,
     receivedMetadata: CausalMetadata,
   ): Promise<{ prev: string | undefined; metadata: CausalMetadata }> {
-    const { prev, timestamp } = await this.createOrUpdateKv(kvData, receivedMetadata);
-    const updatedReceiveCausalMetadata = this.updateReceivedCausalMetadata(receivedMetadata);
-    const metadata = { ...updatedReceiveCausalMetadata, [kvData.key]: timestamp };
+    const { prev, val } = await this.createOrUpdateKv(kvData, receivedMetadata);
+    const { causalContext } = val;
+    const updatedReceivedCausalMetadata = this.updateReceivedCausalMetadata(receivedMetadata);
+    const metadata = { ...updatedReceivedCausalMetadata, [kvData.key]: causalContext.timestamp };
     // broadcast write
     if (IORunning()) {
-      const broadcastData = { key: kvData.key, val: kvData.val, "causal-metadata": metadata, sender: ADDRESS, shard_id };
+      const broadcastData = { key: kvData.key, val, sender: ADDRESS, shard_id };
       broadcast("kvs:write", broadcastData);
     }
     return { prev, metadata };
@@ -64,14 +65,16 @@ class KvsService {
     key: string,
     receivedMetadata: CausalMetadata,
   ): Promise<{ prev: string | undefined; metadata: CausalMetadata }> {
-    const { prev, timestamp } = await this.deleteKv(key, receivedMetadata);
-    let metadata = receivedMetadata;
+    const { prev, val } = await this.deleteKv(key, receivedMetadata);
+    const { causalContext } = val;
+    const updatedReceivedCausalMetadata = this.updateReceivedCausalMetadata(receivedMetadata);
+    let metadata = updatedReceivedCausalMetadata;
     if (prev !== undefined) {
-      metadata = { ...metadata, [key]: timestamp };
+      metadata = { ...metadata, [key]: causalContext.timestamp };
     }
     // broadcast delete
     if (IORunning()) {
-      const broadcastData = { key, "causal-metadata": metadata, sender: ADDRESS, shard_id };
+      const broadcastData = { key, causalContext, sender: ADDRESS, shard_id };
       broadcast("kvs:delete", broadcastData);
     }
     return { prev, metadata };
@@ -80,20 +83,20 @@ class KvsService {
   public async retreiveAllKeys(
     receivedMetadata: CausalMetadata,
   ): Promise<{ success: boolean; count?: number; keys?: string[]; metadata?: CausalMetadata }> {
-    let consistent = true;
+    const inconsistentKeys:string[] = [];
     for (const key in receivedMetadata) {
       if (this.kvs[key] === undefined || this.kvs[key].causalContext.timestamp < receivedMetadata[key]) {
-        consistent = false;
-        break;
+        logger.info(`inconsistent for key ${key} - local: ${this.kvs[key]?.causalContext.timestamp} - received: ${receivedMetadata[key]}`);
+        inconsistentKeys.push(key);
       }
     }
-    if (consistent) {
+    if (inconsistentKeys.length === 0) {
       const keys = await this.getAllKeys();
       const metadata = this.updateReceivedCausalMetadata(receivedMetadata);
       return { ...keys, metadata, success: true };
     } else {
       if (IORunning()) {
-        const { success, value }: { success: boolean; value: any } = await getConsistentKeys(receivedMetadata);
+        const { success, value }: { success: boolean; value: any } = await getConsistentKeys(inconsistentKeys, receivedMetadata);
         if (success) {
           const metadata = this.updateReceivedCausalMetadata(receivedMetadata);
           return { ...value, metadata, success: true };
@@ -106,23 +109,24 @@ class KvsService {
     }
   }
 
-  public async createOrUpdateKv(kvData: KV, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; timestamp: number }> {
+  public async createOrUpdateKv(kvData: KV, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
+    const val: ValWithCausalContext = {
+      val: kvData.val,
+      causalContext: {
+        timestamp,
+        causalMetadata,
+      },
+    }
     await this.mutex.runExclusive(async () => {
       const prev = this.kvs[kvData.key];
       if (prev !== undefined) {
         prevVal = prev.val;
       }
-      this.kvs[kvData.key] = {
-        val: kvData.val,
-        causalContext: {
-          timestamp,
-          causalMetadata,
-        },
-      };
+      this.kvs[kvData.key] = val;
     });
-    return { prev: prevVal, timestamp };
+    return { prev: prevVal, val };
   }
 
   public async getAllKeys(): Promise<{ count: number; keys: string[] }> {
@@ -142,23 +146,24 @@ class KvsService {
     return value;
   }
 
-  public async deleteKv(key: string, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; timestamp: number }> {
+  public async deleteKv(key: string, causalMetadata: CausalMetadata): Promise<{ prev: string | undefined; val: ValWithCausalContext }> {
     let prevVal: string | undefined;
     const timestamp = Date.now();
+    const val: ValWithCausalContext = {
+      val: undefined,
+      causalContext: {
+        timestamp,
+        causalMetadata,
+      },
+    }
     await this.mutex.runExclusive(async () => {
       const prev = this.kvs[key];
       if (prev !== undefined) {
         prevVal = prev.val;
-        this.kvs[key] = {
-          val: undefined,
-          causalContext: {
-            timestamp,
-            causalMetadata,
-          },
-        };
+        this.kvs[key] = val;
       }
     });
-    return { prev: prevVal, timestamp };
+    return { prev: prevVal, val };
   }
 
   public async updateKvs(newKvs: KvStore): Promise<void> {

@@ -6,6 +6,7 @@ import causalContexts from "@/models/causalContexts.model";
 import { getLatestCausalContext } from "./causalContext.service";
 import { logger } from "@/utils/logger";
 import { ValWithCausalContext } from "@/interfaces/kv.interface";
+import kvsService from "./kvs.service";
 
 type operations = "write" | "delete" | "read" | "readall";
 export const replicateUpdates = (op: operations, key: string, val: string, causalContext: CausalContext) => {
@@ -50,19 +51,26 @@ export const getConsistentVal = async (key: string, receivedMetadata: CausalMeta
   return res;
 }
 
-export const getConsistentKeys = async (receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any; exists: boolean }> => {
-  logger.info(`getting causal consistency for kvs with received metadata: ${JSON.stringify(receivedMetadata)}`);
-  const message = { metadata: receivedMetadata, sender: ADDRESS };
+export const getConsistentKeys = async (inconsistentKeys: string[], receivedMetadata: CausalMetadata): Promise<{ success: boolean; value: any }> => {
+  logger.info(`getting causal consistency for ${inconsistentKeys} with received metadata: ${JSON.stringify(receivedMetadata)}`);
+  const message = { metadata: receivedMetadata, keys: inconsistentKeys, sender: ADDRESS };
   broadcast("causal:get-kvs", message);
-  const res = await new Promise<{ success: boolean; value: any; exists: boolean }>(resolve => {
+  const receivedKeys = new Set<string>();
+  const res = await new Promise<{ success: boolean; value: any }>(resolve => {
     const timeout = setTimeout(() => {
       logger.error(`timeout waiting for causal consistency on kvs`);
-      resolve({ success: false, value: undefined, exists: false });
+      resolve({ success: false, value: undefined });
     }, 20000);
-    IOEventEmitter.once(`causal:kvs-consistent`, data => {
-      clearTimeout(timeout);
-      logger.info(`received causal consistency for kvs`);
-      resolve({ success: true, value: data, exists: true });
+    IOEventEmitter.on(`causal:kvs-consistent`, async data => {
+      for (const key of data.keys) {
+        receivedKeys.add(key);
+      }
+      if (receivedKeys.size === inconsistentKeys.length) {
+        clearTimeout(timeout);
+        logger.info(`received causal consistency for kvs`);
+        const value = await kvsService.getAllKeys();
+        resolve({ success: true, value });
+      }
     });
   });
   return res;
