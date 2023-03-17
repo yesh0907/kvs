@@ -1,23 +1,24 @@
 Mechanism Description:
 
-To ensure causal consistency, we needed to make sure we handle our clocks correctly for reads and writes.
-For reads, we needed to check for consistency. If the local vector clock of a node reads lower (or earlier),
-then the node's vector clock reading a value will broadcast to all nodes with the correct vector clocks for
-the events that transpired that the local node missed. Once received, it will possess the correct events and
-information, and will be able to fulfill the read request. For writes, we do not need to check for consistency,
-since the write makes the node consistent. Writes could mean adding to our KVS, deleting from our KVS, or updating
-one of the values from our KVS. For each write, however, we must increment our clocks before the execution to
-account for the fact that an operation was done. We acknowledge the client that the write was fulfilled and
-broadcast the operation and our updated clock to all correct nodes.
+To ensure causal consistency, we used the timestamp at which write and delete operations occured on a KVS.
+When a write operation is triggered, the KVS does not stall and immediately writes the data to the KVS,
+either locally or by proxing the request. The causal metadata that is returned will be updated with the timestamp of the most recent write and updated
+timestamps for the keys in the causal metadata sent by the client. This is to ensure the latest versions of
+keys are visible, which respects causal consistency. The same approach is applied to delete operations.
+When a read operation is triggered, the KVS will first check to see if the key exists in its shard.
+If it does and the causal metadata sent by the client has the key in it, the system will compare the KVS's
+timestamp with the causal metadata's timestamp. If the KVS's timestamp is causally later, then the KVS immediately
+responds to the request and returns an updated set of values for the causal metadata sent by the client.
+If the KVS's value is not causally later than the causal metadata's version of the key, then the system will
+query the replicas for the shard to obtain a causally consistent value.
 
 A replica can detect if other replicas are down when a view change is adminstered. A replica has 10 seconds
 to respond to the view change PUT request. If it does not respond within 10 seconds, then that replica is considered down.
-Every 10 seconds, when the replicas converge, a request will be sent to the replicas that are down to see if they are up and
-get them to be consistent.
+If a replica is down, we let the replica remain down. We did not have enough time to implement a solution to handle this scenario.
 
-Sharding happens mostly on the view layer of the server where addresses in the view are distributed into the 
-given number of shards and synchronized. Existing data in any node must be run through the lookUp function 
+Sharding happens mostly on the view layer of the server where addresses in the view are distributed into the
+given number of shards and synchronized. Existing data in any node must be run through the lookUp function
 after a view change where it is hashed and finds a new shard where all the replicas are updated. This process
-is known as resharding and for our simple model we don't bother trying to minimize data movement. Replicas in the 
-same view should all have the same data and when one is updated they all update. This horizontal scaling helps 
+is known as resharding and for our simple model we don't bother trying to minimize data movement. Replicas in the
+same view should all have the same data and when one is updated they all update. This horizontal scaling helps
 distribute data across multiple nodes and hopefully increases speed and space.

@@ -1,9 +1,4 @@
-# CSE 138: Assignment 4 - An Available Fault-Tolerant Key Value Store by Yesh Chandiramani, Myles Mansfield, Eli Warres
-
-
-## Implementation Strategy
-- using vector clocks for causal consistency
-- using a custom replication protocol (similar to quorom)
+# CSE 138: Assignment 4 - An Available Sharded Fault-Tolerant Key Value Store by Yesh Chandiramani, Myles Mansfield, Eli Warres
 
 ## File Structure
 - src contains all source code
